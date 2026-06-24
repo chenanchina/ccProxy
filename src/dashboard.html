@@ -5,110 +5,306 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>ccProxy Token 管理</title>
 <style>
-  :root { color-scheme: light dark; --bd: #d0d7de; --mut: #6b7280; --bg: #f6f8fa; --acc: #2563eb; }
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --surface-2: #f1f3f5;
+    --bd: #e4e7ec;
+    --bd-strong: #d0d5dd;
+    --text: #1a1d24;
+    --mut: #667085;
+    --mut-2: #98a2b3;
+    --acc: #4f46e5;
+    --acc-hover: #4338ca;
+    --acc-soft: #eef2ff;
+    --ok: #15803d;
+    --ok-soft: #ecfdf3;
+    --off: #b42318;
+    --off-soft: #fef3f2;
+    --shadow: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+    --shadow-lg: 0 4px 6px -2px rgba(16,24,40,.03), 0 12px 16px -4px rgba(16,24,40,.08);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0f14;
+      --surface: #161a22;
+      --surface-2: #1d222c;
+      --bd: #262b36;
+      --bd-strong: #333a47;
+      --text: #e6e8ec;
+      --mut: #8b93a3;
+      --mut-2: #6b7384;
+      --acc: #818cf8;
+      --acc-hover: #a5b4fc;
+      --acc-soft: #1e2233;
+      --ok: #4ade80;
+      --ok-soft: #14241a;
+      --off: #f87171;
+      --off-soft: #2a1717;
+      --shadow: 0 1px 2px rgba(0,0,0,.3);
+      --shadow-lg: 0 12px 28px -8px rgba(0,0,0,.5);
+    }
+  }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 24px; line-height: 1.5; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--mut); font-size: 13px; margin-bottom: 20px; }
-  .card { border: 1px solid var(--bd); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  input, button, select { font: inherit; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--bd); background: transparent; color: inherit; }
-  button { cursor: pointer; }
-  button.primary { background: var(--acc); color: #fff; border-color: var(--acc); }
-  button.link { border: none; background: none; color: var(--acc); padding: 4px; }
-  button.danger { color: #dc2626; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--bd); vertical-align: top; }
-  th { color: var(--mut); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  code.token { font-size: 12px; background: var(--bg); padding: 2px 6px; border-radius: 5px; cursor: pointer; }
-  .pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--bd); }
-  .pill.off { color: #dc2626; border-color: #dc2626; }
-  .err { color: #dc2626; font-size: 13px; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+  .sub { color: var(--mut); font-size: 13px; margin-top: 3px; }
   .muted { color: var(--mut); }
-  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
-  .tabs button { border: 1px solid var(--bd); }
-  .tabs button.active { background: var(--acc); color: #fff; border-color: var(--acc); }
-  #login { max-width: 360px; margin: 60px auto; }
-  #login h1 { text-align: center; }
-  #login .row { margin-top: 12px; }
-  .topbar { display: flex; justify-content: space-between; align-items: baseline; }
+
+  /* ---- top bar ---- */
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 22px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .logo {
+    width: 40px; height: 40px; border-radius: 11px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--acc), #7c3aed);
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 18px;
+    box-shadow: 0 4px 10px -2px color-mix(in srgb, var(--acc) 50%, transparent);
+  }
+
+  /* ---- buttons ---- */
+  button { font: inherit; cursor: pointer; border-radius: 9px; border: 1px solid var(--bd-strong);
+    background: var(--surface); color: var(--text); padding: 8px 14px; transition: .15s; font-weight: 500; }
+  button:hover { border-color: var(--mut-2); }
+  button:active { transform: translateY(.5px); }
+  button.primary { background: var(--acc); color: #fff; border-color: var(--acc); }
+  button.primary:hover { background: var(--acc-hover); border-color: var(--acc-hover); }
+  button.ghost { border: 1px solid transparent; background: transparent; color: var(--mut); padding: 7px 10px; }
+  button.ghost:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
+  button.link { border: none; background: none; color: var(--acc); padding: 4px 6px; font-weight: 500; }
+  button.link:hover { text-decoration: underline; }
+  button.link.danger { color: var(--off); }
+  button.sm { padding: 6px 11px; font-size: 13px; }
+
+  /* ---- inputs ---- */
+  input, select {
+    font: inherit; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--bd-strong);
+    background: var(--surface); color: var(--text); transition: .15s; min-width: 0;
+  }
+  input::placeholder { color: var(--mut-2); }
+  input:focus, select:focus { outline: none; border-color: var(--acc);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 18%, transparent); }
+  select { cursor: pointer; }
+
+  /* ---- card ---- */
+  .card { background: var(--surface); border: 1px solid var(--bd); border-radius: var(--radius);
+    box-shadow: var(--shadow); }
+  .card.pad { padding: 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+  /* ---- stats ---- */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+  @media (max-width: 720px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat { padding: 15px 16px; }
+  .stat .label { font-size: 12px; color: var(--mut); font-weight: 500;
+    display: flex; align-items: center; gap: 7px; }
+  .stat .label svg { width: 15px; height: 15px; opacity: .7; }
+  .stat .value { font-size: 24px; font-weight: 680; margin-top: 7px; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums; }
+
+  /* ---- tabs ---- */
+  .tabs { display: inline-flex; gap: 2px; margin-bottom: 18px; background: var(--surface-2);
+    padding: 4px; border-radius: 11px; border: 1px solid var(--bd); }
+  .tabs button { border: none; background: transparent; color: var(--mut); padding: 7px 16px;
+    border-radius: 8px; font-weight: 500; }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+  /* ---- table ---- */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  thead th { text-align: left; padding: 12px 16px; color: var(--mut); font-weight: 600; font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--bd);
+    background: var(--surface-2); white-space: nowrap; }
+  thead th:first-child { border-top-left-radius: var(--radius); }
+  thead th:last-child { border-top-right-radius: var(--radius); }
+  tbody td { padding: 13px 16px; border-bottom: 1px solid var(--bd); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background .12s; }
+  tbody tr:hover { background: var(--surface-2); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .name-main { font-weight: 550; }
+  .name-note { color: var(--mut); font-size: 12px; margin-top: 2px; }
+
+  code.token { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+    background: var(--surface-2); padding: 4px 9px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--bd); transition: .15s; display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text); }
+  code.token:hover { border-color: var(--acc); color: var(--acc); }
+  code.token svg { width: 13px; height: 13px; opacity: .55; }
+
+  .pill { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; font-weight: 550;
+    display: inline-flex; align-items: center; gap: 5px; }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.on { color: var(--ok); background: var(--ok-soft); }
+  .pill.off { color: var(--off); background: var(--off-soft); }
+
+  .badge { font-size: 11.5px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2);
+    border: 1px solid var(--bd); color: var(--mut); font-weight: 500; }
+  .badge.method { font-family: ui-monospace, monospace; }
+  .status-ok { color: var(--ok); font-weight: 550; }
+  .status-bad { color: var(--off); font-weight: 550; }
+
+  .empty { text-align: center; color: var(--mut); padding: 44px 16px !important; }
+  .empty .big { font-size: 14px; font-weight: 550; color: var(--text); margin-bottom: 4px; }
+
+  .err { color: var(--off); font-size: 13px; }
+  #err:not(:empty) { margin: 0 0 16px; padding: 11px 14px; background: var(--off-soft);
+    border: 1px solid color-mix(in srgb, var(--off) 25%, transparent); border-radius: 10px; }
+
+  .section-head { display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 16px; border-bottom: 1px solid var(--bd); }
+  .section-head h2 { font-size: 14px; font-weight: 600; margin: 0; }
+
+  /* ---- login ---- */
+  #login { max-width: 380px; margin: 12vh auto 0; padding: 32px 28px; }
+  #login .logo { width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 18px;
+    background: linear-gradient(135deg, var(--acc), #7c3aed); display: grid; place-items: center;
+    color: #fff; font-weight: 700; font-size: 24px;
+    box-shadow: 0 8px 18px -4px color-mix(in srgb, var(--acc) 55%, transparent); }
+  #login h1 { text-align: center; font-size: 18px; }
+  #login .sub { text-align: center; margin: 4px 0 22px; }
+  #login .field { display: flex; flex-direction: column; gap: 10px; }
+  #login input { width: 100%; }
+  #login button { width: 100%; padding: 10px; }
+  #login-err { text-align: center; margin-top: 12px; min-height: 18px; }
+
+  /* ---- toast ---- */
+  #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 10px; font-size: 13px;
+    font-weight: 500; box-shadow: var(--shadow-lg); opacity: 0; pointer-events: none; transition: .25s;
+    display: flex; align-items: center; gap: 8px; z-index: 50; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast svg { width: 15px; height: 15px; }
+
+  .fade { animation: fade .25s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 </style>
 </head>
 <body>
+  <!-- ============ login ============ -->
   <div id="login" class="card" style="display:none">
+    <div class="logo">cc</div>
     <h1>ccProxy 管理登录</h1>
-    <div class="sub" style="text-align:center">输入管理密码（ADMIN_API_KEY）。</div>
-    <div class="row">
-      <input id="login-pwd" type="password" placeholder="管理密码" style="flex:1" autofocus />
-      <button class="primary" id="login-btn">登录</button>
+    <div class="sub">输入管理密码（ADMIN_API_KEY）</div>
+    <div class="field">
+      <input id="login-pwd" type="password" placeholder="管理密码" autofocus />
+      <button class="primary" id="login-btn">登 录</button>
     </div>
-    <div id="login-err" class="err" style="margin-top:8px"></div>
+    <div id="login-err" class="err"></div>
   </div>
 
-  <div id="app" style="display:none">
-  <div class="topbar">
-    <div>
-      <h1>ccProxy Token 管理</h1>
-      <div class="sub">为不同的人分发独立 token，并查看各自的请求与 token 消耗。</div>
-    </div>
-    <button class="link" id="logout-btn">退出登录</button>
-  </div>
-  <div id="err" class="err"></div>
-
-  <div class="tabs">
-    <button data-tab="tokens" class="active">Token</button>
-    <button data-tab="usage">用量明细</button>
-  </div>
-
-  <section id="tab-tokens">
-    <div class="card">
-      <div class="row">
-        <input id="new-name" placeholder="使用者名称，如 张三" style="flex:1;min-width:160px" />
-        <input id="new-note" placeholder="备注（可选）" style="flex:2;min-width:160px" />
-        <button class="primary" id="create-btn">创建 Token</button>
+  <!-- ============ app ============ -->
+  <div id="app" class="wrap" style="display:none">
+    <div class="topbar">
+      <div class="brand">
+        <div class="logo">cc</div>
+        <div>
+          <h1>ccProxy Token 管理</h1>
+          <div class="sub">为不同的人分发独立 token，查看各自的请求与消耗</div>
+        </div>
       </div>
+      <button class="ghost" id="logout-btn">退出登录</button>
     </div>
-    <div class="card">
-      <table>
-        <thead><tr>
-          <th>名称</th><th>Token</th><th>状态</th>
-          <th class="num">请求数</th><th class="num">输入</th><th class="num">输出</th><th class="num">推理</th>
-          <th>最近使用</th><th></th>
-        </tr></thead>
-        <tbody id="tokens-body"><tr><td colspan="9" class="muted">加载中…</td></tr></tbody>
-      </table>
-    </div>
-  </section>
 
-  <section id="tab-usage" style="display:none">
-    <div class="card">
-      <div class="row">
-        <select id="usage-filter"><option value="">全部 token</option></select>
-        <button id="usage-refresh">刷新</button>
+    <div id="err"></div>
+
+    <div class="tabs">
+      <button data-tab="tokens" class="active">Token</button>
+      <button data-tab="usage">用量明细</button>
+    </div>
+
+    <!-- ---- tokens ---- -->
+    <section id="tab-tokens">
+      <div class="stats" id="stats"></div>
+
+      <div class="card pad" style="margin-bottom:18px">
+        <div class="row">
+          <input id="new-name" placeholder="使用者名称，如 张三" style="flex:1;min-width:160px" />
+          <input id="new-note" placeholder="备注（可选）" style="flex:2;min-width:160px" />
+          <button class="primary" id="create-btn">＋ 创建 Token</button>
+        </div>
       </div>
-    </div>
-    <div class="card">
-      <table>
-        <thead><tr>
-          <th>时间</th><th>名称</th><th>模型</th><th>路径</th>
-          <th class="num">输入</th><th class="num">输出</th><th class="num">推理</th><th>流式</th><th class="num">状态</th>
-        </tr></thead>
-        <tbody id="usage-body"><tr><td colspan="9" class="muted">加载中…</td></tr></tbody>
-      </table>
-    </div>
-  </section>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>名称</th><th>Token</th><th>状态</th>
+              <th class="num">请求数</th><th class="num">输入</th><th class="num">输出</th><th class="num">推理</th>
+              <th>最近使用</th><th></th>
+            </tr></thead>
+            <tbody id="tokens-body"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- usage ---- -->
+    <section id="tab-usage" style="display:none">
+      <div class="card" style="margin-bottom:18px">
+        <div class="section-head">
+          <h2>用量明细</h2>
+          <div class="row">
+            <select id="usage-filter"><option value="">全部 token</option></select>
+            <button class="sm" id="usage-refresh">刷新</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>时间</th><th>名称</th><th>模型</th><th>路径</th>
+              <th class="num">输入</th><th class="num">输出</th><th class="num">推理</th><th>流式</th><th class="num">状态</th>
+            </tr></thead>
+            <tbody id="usage-body"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </div>
+
+  <div id="toast"></div>
 
 <script>
 const STORE = "ccproxy_admin_pwd";
 let KEY = sessionStorage.getItem(STORE) || "";
 const errEl = document.getElementById("err");
 
+const ICON = {
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+  req: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg>',
+  in: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg>',
+  out: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>',
+};
+
 function showErr(msg) { errEl.textContent = msg || ""; }
 function fmtTs(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
 function fmtNum(n) { return (n || 0).toLocaleString(); }
 function esc(s) { return (s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.innerHTML = ICON.check + esc(msg);
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
+}
 
 async function api(method, path, body) {
   const res = await fetch(path, {
@@ -170,28 +366,45 @@ async function doLogin() {
   } catch (e) { errBox.textContent = e.message; }
 }
 
+function renderStats(tokens) {
+  const sum = (k) => tokens.reduce((a, t) => a + (t[k] || 0), 0);
+  const active = tokens.filter(t => !t.disabled).length;
+  const cards = [
+    { label: "Token 数", icon: ICON.users, value: `${tokens.length}<span class="muted" style="font-size:14px;font-weight:500"> · ${active} 启用</span>` },
+    { label: "总请求数", icon: ICON.req, value: fmtNum(sum("requests")) },
+    { label: "输入 Token", icon: ICON.in, value: fmtNum(sum("input_tokens")) },
+    { label: "输出 Token", icon: ICON.out, value: fmtNum(sum("output_tokens")) },
+  ];
+  document.getElementById("stats").innerHTML = cards.map(c => `
+    <div class="card stat">
+      <div class="label">${c.icon}${c.label}</div>
+      <div class="value">${c.value}</div>
+    </div>`).join("");
+}
+
 async function loadTokens() {
   showErr("");
   try {
     const tokens = await api("GET", "/admin/api/tokens");
+    renderStats(tokens);
     const body = document.getElementById("tokens-body");
     const filter = document.getElementById("usage-filter");
     filter.innerHTML = '<option value="">全部 token</option>';
     if (!tokens.length) {
-      body.innerHTML = '<tr><td colspan="9" class="muted">还没有 token，先创建一个。</td></tr>';
+      body.innerHTML = '<tr><td colspan="9" class="empty"><div class="big">还没有 token</div>先在上方创建一个，分发给使用者。</td></tr>';
       return;
     }
     body.innerHTML = tokens.map(t => `
-      <tr>
-        <td>${esc(t.name)}${t.note ? `<br><span class="muted" style="font-size:12px">${esc(t.note)}</span>` : ""}</td>
-        <td><code class="token" title="点击复制" data-token="${esc(t.token)}">${esc(t.token)}</code></td>
-        <td><span class="pill ${t.disabled ? "off" : ""}">${t.disabled ? "已停用" : "启用"}</span></td>
+      <tr class="fade">
+        <td><div class="name-main">${esc(t.name)}</div>${t.note ? `<div class="name-note">${esc(t.note)}</div>` : ""}</td>
+        <td><code class="token" title="点击复制" data-token="${esc(t.token)}">${esc(t.token)}${ICON.copy}</code></td>
+        <td><span class="pill ${t.disabled ? "off" : "on"}">${t.disabled ? "已停用" : "启用"}</span></td>
         <td class="num">${fmtNum(t.requests)}</td>
         <td class="num">${fmtNum(t.input_tokens)}</td>
         <td class="num">${fmtNum(t.output_tokens)}</td>
         <td class="num">${fmtNum(t.reasoning_tokens)}</td>
-        <td class="muted" style="font-size:12px">${fmtTs(t.last_used_at)}</td>
-        <td>
+        <td class="muted" style="font-size:12.5px">${fmtTs(t.last_used_at)}</td>
+        <td style="white-space:nowrap;text-align:right">
           <button class="link" data-toggle="${t.id}" data-disabled="${t.disabled}">${t.disabled ? "启用" : "停用"}</button>
           <button class="link danger" data-del="${t.id}" data-name="${esc(t.name)}">删除</button>
         </td>
@@ -212,17 +425,17 @@ async function loadUsage() {
     const rows = await api("GET", "/admin/api/usage" + q);
     const body = document.getElementById("usage-body");
     body.innerHTML = rows.length ? rows.map(r => `
-      <tr>
-        <td class="muted" style="font-size:12px">${fmtTs(r.ts)}</td>
-        <td>${esc(r.name) || '<span class="muted">master</span>'}</td>
-        <td>${esc(r.model) || "—"}</td>
-        <td class="muted">${esc(r.path)}</td>
+      <tr class="fade">
+        <td class="muted" style="font-size:12.5px;white-space:nowrap">${fmtTs(r.ts)}</td>
+        <td>${r.name ? esc(r.name) : '<span class="muted">master</span>'}</td>
+        <td>${r.model ? `<span class="badge">${esc(r.model)}</span>` : "—"}</td>
+        <td class="muted" style="font-size:12.5px">${esc(r.path)}</td>
         <td class="num">${fmtNum(r.input_tokens)}</td>
         <td class="num">${fmtNum(r.output_tokens)}</td>
         <td class="num">${fmtNum(r.reasoning_tokens)}</td>
-        <td>${r.stream ? "是" : "—"}</td>
-        <td class="num">${r.status ?? "—"}</td>
-      </tr>`).join("") : '<tr><td colspan="9" class="muted">暂无记录。</td></tr>';
+        <td>${r.stream ? '<span class="badge">流式</span>' : "—"}</td>
+        <td class="num">${r.status == null ? "—" : `<span class="${r.status < 400 ? "status-ok" : "status-bad"}">${r.status}</span>`}</td>
+      </tr>`).join("") : '<tr><td colspan="9" class="empty"><div class="big">暂无记录</div>有请求经过代理后会显示在这里。</td></tr>';
   } catch (e) { showErr(e.message); }
 }
 
@@ -234,13 +447,18 @@ document.getElementById("create-btn").addEventListener("click", async () => {
     await api("POST", "/admin/api/tokens", { name, note: note || null });
     document.getElementById("new-name").value = "";
     document.getElementById("new-note").value = "";
+    toast("已创建 Token");
     loadTokens();
   } catch (e) { showErr(e.message); }
 });
 
 document.getElementById("tokens-body").addEventListener("click", async (e) => {
   const tok = e.target.closest("[data-token]");
-  if (tok) { navigator.clipboard?.writeText(tok.dataset.token); tok.textContent = "已复制!"; setTimeout(loadTokens, 700); return; }
+  if (tok) {
+    try { await navigator.clipboard?.writeText(tok.dataset.token); toast("Token 已复制"); }
+    catch { toast("复制失败"); }
+    return;
+  }
   const toggle = e.target.closest("[data-toggle]");
   if (toggle) {
     try { await api("PATCH", "/admin/api/tokens/" + toggle.dataset.toggle, { disabled: toggle.dataset.disabled !== "true" }); loadTokens(); }
@@ -250,7 +468,7 @@ document.getElementById("tokens-body").addEventListener("click", async (e) => {
   const del = e.target.closest("[data-del]");
   if (del) {
     if (!confirm(`删除 token「${del.dataset.name}」？历史用量记录会保留为 master。`)) return;
-    try { await api("DELETE", "/admin/api/tokens/" + del.dataset.del); loadTokens(); }
+    try { await api("DELETE", "/admin/api/tokens/" + del.dataset.del); toast("已删除"); loadTokens(); }
     catch (err) { showErr(err.message); }
   }
 });

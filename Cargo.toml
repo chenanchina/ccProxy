@@ -3,6 +3,9 @@ name = "ccproxy"
 version = "0.1.0"
 edition = "2021"
 description = "Local OpenAI/Anthropic to Codex Responses proxy with ChatGPT OAuth and upstream HTTP proxy support."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/chenanchina/ccProxy"
 
 [[bin]]
 name = "ccproxy"
