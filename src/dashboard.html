@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ccProxy Token 管理</title>
+<style>
+  :root { color-scheme: light dark; --bd: #d0d7de; --mut: #6b7280; --bg: #f6f8fa; --acc: #2563eb; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 24px; line-height: 1.5; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--mut); font-size: 13px; margin-bottom: 20px; }
+  .card { border: 1px solid var(--bd); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input, button, select { font: inherit; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--bd); background: transparent; color: inherit; }
+  button { cursor: pointer; }
+  button.primary { background: var(--acc); color: #fff; border-color: var(--acc); }
+  button.link { border: none; background: none; color: var(--acc); padding: 4px; }
+  button.danger { color: #dc2626; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--bd); vertical-align: top; }
+  th { color: var(--mut); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code.token { font-size: 12px; background: var(--bg); padding: 2px 6px; border-radius: 5px; cursor: pointer; }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--bd); }
+  .pill.off { color: #dc2626; border-color: #dc2626; }
+  .err { color: #dc2626; font-size: 13px; }
+  .muted { color: var(--mut); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tabs button { border: 1px solid var(--bd); }
+  .tabs button.active { background: var(--acc); color: #fff; border-color: var(--acc); }
+  #login { max-width: 360px; margin: 60px auto; }
+  #login h1 { text-align: center; }
+  #login .row { margin-top: 12px; }
+  .topbar { display: flex; justify-content: space-between; align-items: baseline; }
+</style>
+</head>
+<body>
+  <div id="login" class="card" style="display:none">
+    <h1>ccProxy 管理登录</h1>
+    <div class="sub" style="text-align:center">输入管理密码（ADMIN_API_KEY）。</div>
+    <div class="row">
+      <input id="login-pwd" type="password" placeholder="管理密码" style="flex:1" autofocus />
+      <button class="primary" id="login-btn">登录</button>
+    </div>
+    <div id="login-err" class="err" style="margin-top:8px"></div>
+  </div>
+
+  <div id="app" style="display:none">
+  <div class="topbar">
+    <div>
+      <h1>ccProxy Token 管理</h1>
+      <div class="sub">为不同的人分发独立 token，并查看各自的请求与 token 消耗。</div>
+    </div>
+    <button class="link" id="logout-btn">退出登录</button>
+  </div>
+  <div id="err" class="err"></div>
+
+  <div class="tabs">
+    <button data-tab="tokens" class="active">Token</button>
+    <button data-tab="usage">用量明细</button>
+  </div>
+
+  <section id="tab-tokens">
+    <div class="card">
+      <div class="row">
+        <input id="new-name" placeholder="使用者名称，如 张三" style="flex:1;min-width:160px" />
+        <input id="new-note" placeholder="备注（可选）" style="flex:2;min-width:160px" />
+        <button class="primary" id="create-btn">创建 Token</button>
+      </div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr>
+          <th>名称</th><th>Token</th><th>状态</th>
+          <th class="num">请求数</th><th class="num">输入</th><th class="num">输出</th><th class="num">推理</th>
+          <th>最近使用</th><th></th>
+        </tr></thead>
+        <tbody id="tokens-body"><tr><td colspan="9" class="muted">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-usage" style="display:none">
+    <div class="card">
+      <div class="row">
+        <select id="usage-filter"><option value="">全部 token</option></select>
+        <button id="usage-refresh">刷新</button>
+      </div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr>
+          <th>时间</th><th>名称</th><th>模型</th><th>路径</th>
+          <th class="num">输入</th><th class="num">输出</th><th class="num">推理</th><th>流式</th><th class="num">状态</th>
+        </tr></thead>
+        <tbody id="usage-body"><tr><td colspan="9" class="muted">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+  </div>
+
+<script>
+const STORE = "ccproxy_admin_pwd";
+let KEY = sessionStorage.getItem(STORE) || "";
+const errEl = document.getElementById("err");
+
+function showErr(msg) { errEl.textContent = msg || ""; }
+function fmtTs(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
+function fmtNum(n) { return (n || 0).toLocaleString(); }
+function esc(s) { return (s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: { "x-api-key": KEY, "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401 || res.status === 403) {
+    logout();
+    throw new Error("登录已失效，请重新登录");
+  }
+  if (!res.ok) {
+    let detail = res.status;
+    try { detail = (await res.json()).error?.message || detail; } catch {}
+    throw new Error("请求失败: " + detail);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function showApp() {
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "";
+}
+function logout() {
+  KEY = "";
+  sessionStorage.removeItem(STORE);
+  document.getElementById("app").style.display = "none";
+  const login = document.getElementById("login");
+  login.style.display = "";
+  document.getElementById("login-pwd").focus();
+}
+
+async function tryLogin(pwd) {
+  const res = await fetch("/admin/api/tokens", { headers: { "x-api-key": pwd } });
+  if (res.ok) return true;
+  if (res.status === 401 || res.status === 403) return false;
+  throw new Error("服务异常: " + res.status);
+}
+
+document.getElementById("login-btn").addEventListener("click", doLogin);
+document.getElementById("login-pwd").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+document.getElementById("logout-btn").addEventListener("click", logout);
+
+async function doLogin() {
+  const errBox = document.getElementById("login-err");
+  errBox.textContent = "";
+  const pwd = document.getElementById("login-pwd").value;
+  if (!pwd) { errBox.textContent = "请输入密码"; return; }
+  try {
+    if (await tryLogin(pwd)) {
+      KEY = pwd;
+      sessionStorage.setItem(STORE, pwd);
+      document.getElementById("login-pwd").value = "";
+      showApp();
+      loadTokens();
+    } else {
+      errBox.textContent = "密码错误";
+    }
+  } catch (e) { errBox.textContent = e.message; }
+}
+
+async function loadTokens() {
+  showErr("");
+  try {
+    const tokens = await api("GET", "/admin/api/tokens");
+    const body = document.getElementById("tokens-body");
+    const filter = document.getElementById("usage-filter");
+    filter.innerHTML = '<option value="">全部 token</option>';
+    if (!tokens.length) {
+      body.innerHTML = '<tr><td colspan="9" class="muted">还没有 token，先创建一个。</td></tr>';
+      return;
+    }
+    body.innerHTML = tokens.map(t => `
+      <tr>
+        <td>${esc(t.name)}${t.note ? `<br><span class="muted" style="font-size:12px">${esc(t.note)}</span>` : ""}</td>
+        <td><code class="token" title="点击复制" data-token="${esc(t.token)}">${esc(t.token)}</code></td>
+        <td><span class="pill ${t.disabled ? "off" : ""}">${t.disabled ? "已停用" : "启用"}</span></td>
+        <td class="num">${fmtNum(t.requests)}</td>
+        <td class="num">${fmtNum(t.input_tokens)}</td>
+        <td class="num">${fmtNum(t.output_tokens)}</td>
+        <td class="num">${fmtNum(t.reasoning_tokens)}</td>
+        <td class="muted" style="font-size:12px">${fmtTs(t.last_used_at)}</td>
+        <td>
+          <button class="link" data-toggle="${t.id}" data-disabled="${t.disabled}">${t.disabled ? "启用" : "停用"}</button>
+          <button class="link danger" data-del="${t.id}" data-name="${esc(t.name)}">删除</button>
+        </td>
+      </tr>`).join("");
+    for (const t of tokens) {
+      const opt = document.createElement("option");
+      opt.value = t.id; opt.textContent = t.name;
+      filter.appendChild(opt);
+    }
+  } catch (e) { showErr(e.message); }
+}
+
+async function loadUsage() {
+  showErr("");
+  try {
+    const tid = document.getElementById("usage-filter").value;
+    const q = tid ? `?token_id=${tid}&limit=500` : "?limit=500";
+    const rows = await api("GET", "/admin/api/usage" + q);
+    const body = document.getElementById("usage-body");
+    body.innerHTML = rows.length ? rows.map(r => `
+      <tr>
+        <td class="muted" style="font-size:12px">${fmtTs(r.ts)}</td>
+        <td>${esc(r.name) || '<span class="muted">master</span>'}</td>
+        <td>${esc(r.model) || "—"}</td>
+        <td class="muted">${esc(r.path)}</td>
+        <td class="num">${fmtNum(r.input_tokens)}</td>
+        <td class="num">${fmtNum(r.output_tokens)}</td>
+        <td class="num">${fmtNum(r.reasoning_tokens)}</td>
+        <td>${r.stream ? "是" : "—"}</td>
+        <td class="num">${r.status ?? "—"}</td>
+      </tr>`).join("") : '<tr><td colspan="9" class="muted">暂无记录。</td></tr>';
+  } catch (e) { showErr(e.message); }
+}
+
+document.getElementById("create-btn").addEventListener("click", async () => {
+  const name = document.getElementById("new-name").value.trim();
+  if (!name) { showErr("请填写名称"); return; }
+  const note = document.getElementById("new-note").value.trim();
+  try {
+    await api("POST", "/admin/api/tokens", { name, note: note || null });
+    document.getElementById("new-name").value = "";
+    document.getElementById("new-note").value = "";
+    loadTokens();
+  } catch (e) { showErr(e.message); }
+});
+
+document.getElementById("tokens-body").addEventListener("click", async (e) => {
+  const tok = e.target.closest("[data-token]");
+  if (tok) { navigator.clipboard?.writeText(tok.dataset.token); tok.textContent = "已复制!"; setTimeout(loadTokens, 700); return; }
+  const toggle = e.target.closest("[data-toggle]");
+  if (toggle) {
+    try { await api("PATCH", "/admin/api/tokens/" + toggle.dataset.toggle, { disabled: toggle.dataset.disabled !== "true" }); loadTokens(); }
+    catch (err) { showErr(err.message); }
+    return;
+  }
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    if (!confirm(`删除 token「${del.dataset.name}」？历史用量记录会保留为 master。`)) return;
+    try { await api("DELETE", "/admin/api/tokens/" + del.dataset.del); loadTokens(); }
+    catch (err) { showErr(err.message); }
+  }
+});
+
+document.getElementById("usage-refresh").addEventListener("click", loadUsage);
+document.getElementById("usage-filter").addEventListener("change", loadUsage);
+
+document.querySelectorAll(".tabs button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const tab = btn.dataset.tab;
+    document.getElementById("tab-tokens").style.display = tab === "tokens" ? "" : "none";
+    document.getElementById("tab-usage").style.display = tab === "usage" ? "" : "none";
+    if (tab === "usage") loadUsage();
+  });
+});
+
+(async () => {
+  if (KEY && await tryLogin(KEY).catch(() => false)) {
+    showApp();
+    loadTokens();
+  } else {
+    logout();
+  }
+})();
+</script>
+</body>
+</html>

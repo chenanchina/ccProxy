@@ -1,0 +1,20 @@
+[Unit]
+Description=ccProxy - OpenAI/Anthropic to Codex Responses proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust the absolute paths and user to match your install.
+ExecStart=/opt/ccproxy/ccproxy
+WorkingDirectory=/opt/ccproxy
+EnvironmentFile=/opt/ccproxy/.env
+Restart=on-failure
+RestartSec=2
+# auth.json lives under the service user's home (~/.codex/auth.json).
+# Set HOME explicitly so token refresh writes to the right place.
+Environment=HOME=/opt/ccproxy
+DynamicUser=no
+
+[Install]
+WantedBy=multi-user.target
