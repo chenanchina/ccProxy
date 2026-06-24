@@ -4,6 +4,12 @@
 
 一套 Rust 服务同时用于 **Linux 部署** 和 **macOS 菜单栏 App**——让 Claude Code、以及任何走 Anthropic 协议的客户端,都能用上 ChatGPT/Codex 后端。
 
+> [!NOTE]
+> ccProxy **只负责把 Codex 套餐转换成一个 Anthropic 兼容接口**,它本身不是客户端。
+> 要在 Claude Code 里用上,还需要配合 [cc-switch](https://github.com/farion1231/cc-switch) 等工具,
+> 把客户端的 API 地址指向本代理(`http://127.0.0.1:48317`)、并填入这里分发的 `sk-ccp-...` token。
+> 任何支持自定义 Anthropic Base URL 的客户端同理。
+
 ## 特性
 
 - **协议转换**:`/v1/messages` 接受 Anthropic 格式,转发到 Codex Responses 后端,流式与非流式都支持。
