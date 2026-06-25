@@ -565,7 +565,14 @@ fn extract_usage(bytes: &[u8]) -> (i64, i64, i64) {
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
-async fn dashboard() -> Response {
+async fn dashboard(State(state): State<AppState>) -> Response {
+    // When DASHBOARD_PATH is set, serve that file live so the admin page can be
+    // tweaked without recompiling; otherwise fall back to the embedded copy.
+    if let Some(path) = &state.config.dashboard_path {
+        if let Ok(html) = tokio::fs::read_to_string(path).await {
+            return Html(html).into_response();
+        }
+    }
     Html(DASHBOARD_HTML).into_response()
 }
 

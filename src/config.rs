@@ -49,6 +49,7 @@ pub struct Config {
     pub codex_device_verification_url: String,
     pub codex_device_redirect_uri: String,
     pub model_map: ModelMap,
+    pub dashboard_path: Option<PathBuf>,
     pub default_instructions: String,
     pub upstream_proxy_url: Option<String>,
     pub extra_headers: HashMap<String, String>,
@@ -196,6 +197,7 @@ impl Config {
                 sonnet: get_or(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", "gpt-5.5"),
                 haiku: get_or(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL", "gpt-5.4-mini"),
             },
+            dashboard_path: get(env, "DASHBOARD_PATH").map(|p| expand_home(&p)),
             default_instructions: get_or(
                 env,
                 "DEFAULT_INSTRUCTIONS",
