@@ -47,7 +47,8 @@ if [ "$(id -u)" -ne 0 ]; then
   SUDO="sudo"
 fi
 
-log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+# Logs go to stderr so functions can return values via stdout/$( ).
+log() { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
