@@ -5,15 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adjust the absolute paths and user to match your install.
-ExecStart=/opt/ccproxy/ccproxy
-WorkingDirectory=/opt/ccproxy
-EnvironmentFile=/opt/ccproxy/.env
+# FHS layout: binary in /usr/local/bin, config in /etc/ccproxy, data in /var/lib/ccproxy.
+ExecStart=/usr/local/bin/ccproxy
+WorkingDirectory=/var/lib/ccproxy
+EnvironmentFile=/etc/ccproxy/.env
+# auth.json + SQLite db live under the data dir (HOME/.codex, HOME/.ccproxy).
+Environment=HOME=/var/lib/ccproxy
 Restart=on-failure
 RestartSec=2
-# auth.json lives under the service user's home (~/.codex/auth.json).
-# Set HOME explicitly so token refresh writes to the right place.
-Environment=HOME=/opt/ccproxy
 DynamicUser=no
 
 [Install]

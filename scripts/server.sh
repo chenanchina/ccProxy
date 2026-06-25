@@ -2,27 +2,37 @@
 #
 # ccProxy server manager: install / update / uninstall as a systemd service.
 #
+# Layout (FHS):
+#   binary  -> /usr/local/bin/ccproxy
+#   config  -> /etc/ccproxy/.env
+#   data    -> /var/lib/ccproxy/   (HOME: SQLite db + .codex/auth.json)
+#
 # Usage:
-#   scripts/server.sh install      # build, install to PREFIX, set up + start service
-#   scripts/server.sh update       # rebuild and restart (keeps .env and database)
-#   scripts/server.sh uninstall    # stop and remove the service (keeps PREFIX data)
+#   scripts/server.sh install      # build, install, set up + start service
+#   scripts/server.sh update       # rebuild and restart (keeps config and data)
+#   scripts/server.sh uninstall    # stop and remove the service (keeps config/data)
 #
 # Flags:
 #   --pull              git pull before building (update/install)
-#   --no-build          skip cargo build; reuse the binary at CCPROXY_BIN or PREFIX
-#   --purge             (uninstall only) also delete PREFIX, including .env and db
+#   --no-build          skip cargo build; reuse the binary at CCPROXY_BIN
+#   --purge             (uninstall only) also delete config and data
 #
 # Environment overrides:
-#   CCPROXY_PREFIX   install dir            (default: /opt/ccproxy)
-#   CCPROXY_USER     service user           (default: root)
-#   CCPROXY_BIN      prebuilt binary to use (default: <repo>/target/release/ccproxy)
+#   CCPROXY_USER     service user             (default: root)
+#   CCPROXY_CONF     config dir               (default: /etc/ccproxy)
+#   CCPROXY_DATA     data dir                 (default: /var/lib/ccproxy)
+#   CCPROXY_BIN      prebuilt binary to use   (default: <repo>/target/release/ccproxy)
 #
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PREFIX="${CCPROXY_PREFIX:-/opt/ccproxy}"
 SERVICE="ccproxy"
 UNIT="/etc/systemd/system/${SERVICE}.service"
+BINDIR="/usr/local/bin"
+BIN="${BINDIR}/ccproxy"
+CONFDIR="${CCPROXY_CONF:-/etc/ccproxy}"
+DATADIR="${CCPROXY_DATA:-/var/lib/ccproxy}"
+ENVFILE="${CONFDIR}/.env"
 RUN_USER="${CCPROXY_USER:-root}"
 DEFAULT_BIN="$ROOT_DIR/target/release/ccproxy"
 
@@ -89,10 +99,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${PREFIX}/ccproxy
-WorkingDirectory=${PREFIX}
-EnvironmentFile=${PREFIX}/.env
-Environment=HOME=${PREFIX}
+ExecStart=${BIN}
+WorkingDirectory=${DATADIR}
+EnvironmentFile=${ENVFILE}
+Environment=HOME=${DATADIR}
 ${user_line}
 Restart=on-failure
 RestartSec=2
@@ -112,25 +122,24 @@ do_install() {
   local bin
   bin="$(resolve_binary)"
 
-  log "Installing to $PREFIX"
-  $SUDO mkdir -p "$PREFIX"
-
   if service_active; then
     log "Stopping running service"
     $SUDO systemctl stop "$SERVICE"
   fi
 
-  $SUDO install -m 0755 "$bin" "$PREFIX/ccproxy"
+  log "Installing binary to $BIN"
+  $SUDO install -m 0755 "$bin" "$BIN"
 
-  if [ ! -f "$PREFIX/.env" ]; then
-    log "Seeding $PREFIX/.env from .env.example (edit it before relying on auth)"
-    $SUDO cp "$ROOT_DIR/.env.example" "$PREFIX/.env"
+  $SUDO mkdir -p "$CONFDIR" "$DATADIR"
+  if [ ! -f "$ENVFILE" ]; then
+    log "Seeding $ENVFILE from .env.example (edit it before relying on auth)"
+    $SUDO install -m 0600 "$ROOT_DIR/.env.example" "$ENVFILE"
   else
-    log "Keeping existing $PREFIX/.env"
+    log "Keeping existing $ENVFILE"
   fi
 
   if [ "$RUN_USER" != "root" ]; then
-    $SUDO chown -R "$RUN_USER" "$PREFIX"
+    $SUDO chown -R "$RUN_USER" "$DATADIR"
   fi
 
   write_unit
@@ -138,7 +147,7 @@ do_install() {
   $SUDO systemctl daemon-reload
   $SUDO systemctl enable --now "$SERVICE"
   $SUDO systemctl --no-pager --full status "$SERVICE" || true
-  log "Done. Edit $PREFIX/.env then: $SUDO systemctl restart $SERVICE"
+  log "Done. Edit $ENVFILE then: $SUDO systemctl restart $SERVICE"
 }
 
 do_update() {
@@ -149,10 +158,8 @@ do_update() {
 
   log "Stopping service"
   $SUDO systemctl stop "$SERVICE" || true
-  $SUDO install -m 0755 "$bin" "$PREFIX/ccproxy"
-  if [ "$RUN_USER" != "root" ]; then
-    $SUDO chown "$RUN_USER" "$PREFIX/ccproxy"
-  fi
+  log "Replacing binary at $BIN"
+  $SUDO install -m 0755 "$bin" "$BIN"
   log "Starting service"
   $SUDO systemctl start "$SERVICE"
   $SUDO systemctl --no-pager --full status "$SERVICE" || true
@@ -168,11 +175,12 @@ do_uninstall() {
   else
     log "No unit at $UNIT"
   fi
+  $SUDO rm -f "$BIN"
   if [ "$PURGE" -eq 1 ]; then
-    log "Purging $PREFIX (binary, .env, database, auth)"
-    $SUDO rm -rf "$PREFIX"
+    log "Purging $CONFDIR and $DATADIR (config, database, auth)"
+    $SUDO rm -rf "$CONFDIR" "$DATADIR"
   else
-    log "Kept $PREFIX. Remove it manually or re-run with --purge to delete data."
+    log "Kept $CONFDIR and $DATADIR. Re-run with --purge to delete config and data."
   fi
   log "Uninstalled."
 }

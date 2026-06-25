@@ -136,17 +136,17 @@ App 内置并启动同一个 Rust 代理二进制。改了 `src/dashboard.html` 
 
 ### Linux systemd
 
-用一键脚本安装 / 更新 / 卸载(自动编译、布署到 `/opt/ccproxy`、生成 systemd 服务并启动):
+用一键脚本安装 / 更新 / 卸载(自动编译,按 FHS 布局布署并生成 systemd 服务):
 
 ```bash
 ./scripts/server.sh install     # 首次安装
-./scripts/server.sh update      # 拉新代码后更新:--pull 可顺带 git pull
-./scripts/server.sh uninstall   # 卸载(加 --purge 连数据一起删)
+./scripts/server.sh update      # 更新源码后重编译并重启(保留配置和数据)
+./scripts/server.sh uninstall   # 卸载(加 --purge 连配置和数据一起删)
 ```
 
-安装目录、运行用户可用环境变量覆盖,例如 `CCPROXY_PREFIX=/srv/ccproxy CCPROXY_USER=ccproxy ./scripts/server.sh install`。安装后编辑 `/opt/ccproxy/.env` 填入配置,再 `sudo systemctl restart ccproxy`。token 数据库在更新时自动迁移。
+布局:二进制 `/usr/local/bin/ccproxy`、配置 `/etc/ccproxy/.env`、数据 `/var/lib/ccproxy/`(SQLite 与 `~/.codex/auth.json`)。安装后编辑 `/etc/ccproxy/.env`,再 `sudo systemctl restart ccproxy`。
 
-手动布署可参考 `systemd/ccproxy.service`:把 `cargo build --release` 的产物和 `.env` 放到 `/opt/ccproxy` 再启用服务。
+路径和运行用户可用环境变量覆盖,例如 `CCPROXY_USER=ccproxy CCPROXY_DATA=/srv/ccproxy ./scripts/server.sh install`。手动布署见 `systemd/ccproxy.service`。
 
 ## 配置
 
