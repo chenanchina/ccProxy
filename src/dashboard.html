@@ -304,6 +304,27 @@ function limitCell(t) {
   return `<span class="${over ? "status-bad" : ""}" title="已用 / 额度">${fmtNum(used)} / ${fmtNum(t.token_limit)}</span>`;
 }
 
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch {}
+  }
+  // Fallback for non-secure contexts (plain http://ip), where the Clipboard API is unavailable.
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
 let toastTimer;
 function toast(msg) {
   const el = document.getElementById("toast");
@@ -467,8 +488,8 @@ document.getElementById("create-btn").addEventListener("click", async () => {
 document.getElementById("tokens-body").addEventListener("click", async (e) => {
   const tok = e.target.closest("[data-token]");
   if (tok) {
-    try { await navigator.clipboard?.writeText(tok.dataset.token); toast("Token 已复制"); }
-    catch { toast("复制失败"); }
+    const ok = await copyText(tok.dataset.token);
+    toast(ok ? "Token 已复制" : "复制失败，请手动选择复制");
     return;
   }
   const limitBtn = e.target.closest("[data-limit]");
