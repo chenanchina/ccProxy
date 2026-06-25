@@ -54,7 +54,7 @@
     margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 28px 32px 64px; }
 
   h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
   .sub { color: var(--mut); font-size: 13px; margin-top: 3px; }
@@ -140,7 +140,7 @@
   code.token { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
     background: var(--surface-2); padding: 4px 9px; border-radius: 7px; cursor: pointer;
     border: 1px solid var(--bd); transition: .15s; display: inline-flex; align-items: center; gap: 6px;
-    color: var(--text); }
+    color: var(--text); white-space: nowrap; }
   code.token:hover { border-color: var(--acc); color: var(--acc); }
   code.token svg { width: 13px; height: 13px; opacity: .55; }
 
@@ -179,6 +179,28 @@
   #login input { width: 100%; }
   #login button { width: 100%; padding: 10px; }
   #login-err { text-align: center; margin-top: 12px; min-height: 18px; }
+
+  /* ---- usage charts ---- */
+  .chart-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
+    gap: 10px; margin-bottom: 16px; }
+  .chart-head h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--mut); }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+  .seg-in, .lg-in { background: #6366f1; }
+  .seg-out, .lg-out { background: #22c55e; }
+  .seg-rsn, .lg-rsn { background: #a855f7; }
+  .bars { display: flex; flex-direction: column; gap: 11px; }
+  .bar-row { display: grid; grid-template-columns: minmax(80px, 150px) 1fr auto; align-items: center; gap: 14px; }
+  .bar-label { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar-track { height: 20px; background: var(--surface-2); border-radius: 6px; overflow: hidden; display: flex; }
+  .bar-track .seg { height: 100%; transition: width .4s ease; }
+  .bar-total { text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--mut);
+    min-width: 64px; }
+  .subtabs { display: inline-flex; gap: 2px; background: var(--surface-2); padding: 3px; border-radius: 9px;
+    border: 1px solid var(--bd); }
+  .subtabs button { border: none; background: transparent; color: var(--mut); padding: 5px 13px;
+    border-radius: 7px; font-weight: 500; font-size: 13px; }
+  .subtabs button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 
   /* ---- toast ---- */
   #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
@@ -222,7 +244,7 @@
 
     <div class="tabs">
       <button data-tab="tokens" class="active">Token</button>
-      <button data-tab="usage">用量明细</button>
+      <button data-tab="usage">用量统计</button>
     </div>
 
     <!-- ---- tokens ---- -->
@@ -254,24 +276,58 @@
 
     <!-- ---- usage ---- -->
     <section id="tab-usage" style="display:none">
-      <div class="card" style="margin-bottom:18px">
-        <div class="section-head">
-          <h2>用量明细</h2>
-          <div class="row">
-            <select id="usage-filter"><option value="">全部 token</option></select>
-            <button class="sm" id="usage-refresh">刷新</button>
+      <div class="chart-head" style="margin-bottom:18px">
+        <div class="subtabs">
+          <button data-uview="agg" class="active">按人聚合</button>
+          <button data-uview="detail">明细记录</button>
+        </div>
+        <button class="sm" id="usage-refresh">刷新</button>
+      </div>
+
+      <!-- aggregate -->
+      <div id="uview-agg">
+        <div class="card pad" style="margin-bottom:18px">
+          <div class="chart-head">
+            <h2>各使用者 Token 消耗</h2>
+            <div class="legend">
+              <span><i class="lg-in"></i>输入</span>
+              <span><i class="lg-out"></i>输出</span>
+              <span><i class="lg-rsn"></i>推理</span>
+            </div>
+          </div>
+          <div id="usage-chart" class="bars"></div>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>名称</th><th class="num">请求数</th><th class="num">输入</th><th class="num">输出</th>
+                <th class="num">推理</th><th class="num">合计</th><th class="num">占比</th>
+              </tr></thead>
+              <tbody id="usage-agg-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+            </table>
           </div>
         </div>
       </div>
-      <div class="card">
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>时间</th><th>名称</th><th>模型</th><th>路径</th>
-              <th class="num">输入</th><th class="num">输出</th><th class="num">推理</th><th>流式</th><th class="num">状态</th>
-            </tr></thead>
-            <tbody id="usage-body"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
-          </table>
+
+      <!-- detail -->
+      <div id="uview-detail" style="display:none">
+        <div class="card" style="margin-bottom:18px">
+          <div class="section-head">
+            <h2>明细记录</h2>
+            <select id="usage-filter"><option value="">全部 token</option></select>
+          </div>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>时间</th><th>名称</th><th>模型</th><th>路径</th>
+                <th class="num">输入</th><th class="num">输出</th><th class="num">推理</th><th>流式</th><th class="num">状态</th>
+              </tr></thead>
+              <tbody id="usage-body"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -469,6 +525,65 @@ async function loadUsage() {
   } catch (e) { showErr(e.message); }
 }
 
+let usageView = "agg";
+
+function renderUsageAgg(tokens) {
+  const rows = tokens.map(t => {
+    const input = t.input_tokens || 0, output = t.output_tokens || 0, reasoning = t.reasoning_tokens || 0;
+    return { name: t.name, requests: t.requests || 0, input, output, reasoning, total: input + output + reasoning };
+  }).sort((a, b) => b.total - a.total);
+  const grand = rows.reduce((s, r) => s + r.total, 0);
+  const max = Math.max(1, ...rows.map(r => r.total));
+
+  const chart = document.getElementById("usage-chart");
+  const used = rows.filter(r => r.total > 0);
+  chart.innerHTML = used.length ? used.map(r => {
+    const w = v => (v / max * 100).toFixed(2);
+    return `<div class="bar-row">
+      <div class="bar-label" title="${esc(r.name)}">${esc(r.name)}</div>
+      <div class="bar-track" title="输入 ${fmtNum(r.input)} · 输出 ${fmtNum(r.output)} · 推理 ${fmtNum(r.reasoning)}">
+        <div class="seg seg-in" style="width:${w(r.input)}%"></div>
+        <div class="seg seg-out" style="width:${w(r.output)}%"></div>
+        <div class="seg seg-rsn" style="width:${w(r.reasoning)}%"></div>
+      </div>
+      <div class="bar-total">${fmtNum(r.total)}</div>
+    </div>`;
+  }).join("") : '<div class="empty" style="padding:20px 0">暂无用量数据</div>';
+
+  const body = document.getElementById("usage-agg-body");
+  body.innerHTML = rows.length ? rows.map(r => {
+    const pct = grand ? (r.total / grand * 100) : 0;
+    return `<tr class="fade">
+      <td class="name-main">${esc(r.name)}</td>
+      <td class="num">${fmtNum(r.requests)}</td>
+      <td class="num">${fmtNum(r.input)}</td>
+      <td class="num">${fmtNum(r.output)}</td>
+      <td class="num">${fmtNum(r.reasoning)}</td>
+      <td class="num" style="font-weight:600">${fmtNum(r.total)}</td>
+      <td class="num">${pct.toFixed(1)}%</td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="7" class="empty">还没有 token。</td></tr>';
+}
+
+async function loadUsageAgg() {
+  showErr("");
+  try {
+    renderUsageAgg(await api("GET", "/admin/api/tokens"));
+  } catch (e) { showErr(e.message); }
+}
+
+function showUsageView(view) {
+  usageView = view;
+  document.querySelectorAll(".subtabs button").forEach(b => b.classList.toggle("active", b.dataset.uview === view));
+  document.getElementById("uview-agg").style.display = view === "agg" ? "" : "none";
+  document.getElementById("uview-detail").style.display = view === "detail" ? "" : "none";
+  if (view === "agg") loadUsageAgg(); else loadUsage();
+}
+
+document.querySelectorAll(".subtabs button").forEach(btn => {
+  btn.addEventListener("click", () => showUsageView(btn.dataset.uview));
+});
+
 document.getElementById("create-btn").addEventListener("click", async () => {
   const name = document.getElementById("new-name").value.trim();
   if (!name) { showErr("请填写名称"); return; }
@@ -517,7 +632,7 @@ document.getElementById("tokens-body").addEventListener("click", async (e) => {
   }
 });
 
-document.getElementById("usage-refresh").addEventListener("click", loadUsage);
+document.getElementById("usage-refresh").addEventListener("click", () => usageView === "agg" ? loadUsageAgg() : loadUsage());
 document.getElementById("usage-filter").addEventListener("change", loadUsage);
 
 document.querySelectorAll(".tabs button").forEach(btn => {
@@ -527,7 +642,7 @@ document.querySelectorAll(".tabs button").forEach(btn => {
     const tab = btn.dataset.tab;
     document.getElementById("tab-tokens").style.display = tab === "tokens" ? "" : "none";
     document.getElementById("tab-usage").style.display = tab === "usage" ? "" : "none";
-    if (tab === "usage") loadUsage();
+    if (tab === "usage") showUsageView(usageView);
   });
 });
 
