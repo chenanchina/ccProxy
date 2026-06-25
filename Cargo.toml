@@ -47,3 +47,34 @@ assets = [
     [".env.example", "usr/share/ccproxy/env.example", "644"],
     ["README.md", "usr/share/doc/ccproxy/README.md", "644"],
 ]
+
+[package.metadata.generate-rpm]
+auto-req = "disabled"
+assets = [
+    { source = "target/release/ccproxy", dest = "/usr/bin/ccproxy", mode = "755" },
+    { source = "packaging/ccproxy.service", dest = "/lib/systemd/system/ccproxy.service", mode = "644" },
+    { source = ".env.example", dest = "/usr/share/ccproxy/env.example", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/ccproxy/README.md", mode = "644", doc = true },
+]
+post_install_script = """
+mkdir -p /etc/ccproxy /var/lib/ccproxy
+chmod 755 /var/lib/ccproxy
+if [ ! -f /etc/ccproxy/.env ]; then
+    cp /usr/share/ccproxy/env.example /etc/ccproxy/.env
+    chmod 600 /etc/ccproxy/.env
+fi
+systemctl daemon-reload 2>/dev/null || true
+if [ "$1" = "1" ]; then
+    systemctl enable ccproxy.service 2>/dev/null || true
+fi
+systemctl restart ccproxy.service 2>/dev/null || true
+"""
+pre_uninstall_script = """
+if [ "$1" = "0" ]; then
+    systemctl stop ccproxy.service 2>/dev/null || true
+    systemctl disable ccproxy.service 2>/dev/null || true
+fi
+"""
+post_uninstall_script = """
+systemctl daemon-reload 2>/dev/null || true
+"""
