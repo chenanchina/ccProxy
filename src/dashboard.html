@@ -274,7 +274,8 @@
         <div class="row">
           <input id="new-name" placeholder="使用者名称，如 张三" style="flex:1;min-width:140px" />
           <input id="new-note" placeholder="备注（可选）" style="flex:2;min-width:140px" />
-          <input id="new-limit" type="number" min="0" placeholder="额度（token，可选）" style="flex:1;min-width:140px" />
+          <input id="new-limit" type="number" min="0" placeholder="额度（token，可选）" style="flex:1;min-width:130px" />
+          <input id="new-window" type="number" min="0" placeholder="周期天数（留空=累计）" style="flex:1;min-width:130px" />
           <button class="primary" id="create-btn">＋ 创建 Token</button>
         </div>
       </div>
@@ -334,7 +335,10 @@
         <div class="card" style="margin-bottom:18px">
           <div class="section-head">
             <h2>明细记录</h2>
-            <select id="usage-filter"><option value="">全部 token</option></select>
+            <div class="row">
+              <select id="usage-filter"><option value="">全部 token</option></select>
+              <button class="sm" id="usage-export">导出 CSV</button>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -375,9 +379,11 @@ function fmtNum(n) { return (n || 0).toLocaleString(); }
 function esc(s) { return (s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function limitCell(t) {
   const used = t.used_tokens || 0;
+  const win = t.quota_window_days ? ` <span class="badge" title="滚动周期">${t.quota_window_days}d</span>` : "";
   if (!t.token_limit) return `<span class="muted">${fmtNum(used)} / ∞</span>`;
   const over = used >= t.token_limit;
-  return `<span class="${over ? "status-bad" : ""}" title="已用 / 额度">${fmtNum(used)} / ${fmtNum(t.token_limit)}</span>`;
+  const title = t.quota_window_days ? `近 ${t.quota_window_days} 天已用 / 额度` : "已用 / 额度";
+  return `<span class="${over ? "status-bad" : ""}" title="${title}">${fmtNum(used)} / ${fmtNum(t.token_limit)}</span>${win}`;
 }
 
 async function copyText(text) {
@@ -566,7 +572,8 @@ async function loadTokens() {
         <td class="num">${limitCell(t)}</td>
         <td class="muted" style="font-size:12.5px;white-space:nowrap">${fmtTs(t.last_used_at)}</td>
         <td style="white-space:nowrap;text-align:right">
-          <button class="link" data-limit="${t.id}" data-current="${t.token_limit ?? ''}">额度</button>
+          <button class="link" data-limit="${t.id}" data-current="${t.token_limit ?? ''}" data-window="${t.quota_window_days ?? ''}">额度</button>
+          <button class="link" data-reset="${t.id}" data-name="${esc(t.name)}">清零</button>
           <button class="link" data-toggle="${t.id}" data-disabled="${t.disabled}">${t.disabled ? "启用" : "停用"}</button>
           <button class="link danger" data-del="${t.id}" data-name="${esc(t.name)}">删除</button>
         </td>
@@ -585,6 +592,7 @@ async function loadUsage() {
     const tid = document.getElementById("usage-filter").value;
     const q = tid ? `?token_id=${tid}&limit=500` : "?limit=500";
     const rows = await api("GET", "/admin/api/usage" + q);
+    lastUsageRows = rows;
     const body = document.getElementById("usage-body");
     body.innerHTML = rows.length ? rows.map(r => `
       <tr class="fade">
@@ -602,6 +610,24 @@ async function loadUsage() {
 }
 
 let usageView = "agg";
+let lastUsageRows = [];
+
+function exportUsageCsv() {
+  if (!lastUsageRows.length) { toast("没有可导出的记录"); return; }
+  const cols = ["ts", "name", "model", "path", "input_tokens", "output_tokens", "reasoning_tokens", "stream", "status"];
+  const head = ["时间", "名称", "模型", "路径", "输入", "输出", "推理", "流式", "状态"];
+  const csvCell = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [head.map(csvCell).join(",")];
+  for (const r of lastUsageRows) {
+    lines.push(cols.map(c => csvCell(c === "ts" ? new Date(r.ts).toLocaleString() : c === "stream" ? (r.stream ? "是" : "") : r[c])).join(","));
+  }
+  const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `ccproxy-usage-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 function renderUsageAgg(tokens) {
   const rows = tokens.map(t => {
@@ -666,11 +692,14 @@ document.getElementById("create-btn").addEventListener("click", async () => {
   const note = document.getElementById("new-note").value.trim();
   const limitRaw = document.getElementById("new-limit").value.trim();
   const limit = limitRaw ? Math.max(0, parseInt(limitRaw, 10) || 0) : null;
+  const winRaw = document.getElementById("new-window").value.trim();
+  const window_days = winRaw ? Math.max(0, parseInt(winRaw, 10) || 0) : null;
   try {
-    await api("POST", "/admin/api/tokens", { name, note: note || null, limit });
+    await api("POST", "/admin/api/tokens", { name, note: note || null, limit, window_days });
     document.getElementById("new-name").value = "";
     document.getElementById("new-note").value = "";
     document.getElementById("new-limit").value = "";
+    document.getElementById("new-window").value = "";
     toast("已创建 Token");
     loadTokens();
   } catch (e) { showErr(e.message); }
@@ -685,12 +714,20 @@ document.getElementById("tokens-body").addEventListener("click", async (e) => {
   }
   const limitBtn = e.target.closest("[data-limit]");
   if (limitBtn) {
-    const current = limitBtn.dataset.current || "";
-    const input = prompt("设置额度（token 总量，留空表示不限）：", current);
-    if (input === null) return;
-    const trimmed = input.trim();
-    const limit = trimmed === "" ? null : Math.max(0, parseInt(trimmed, 10) || 0);
-    try { await api("PATCH", "/admin/api/tokens/" + limitBtn.dataset.limit, { limit }); toast("额度已更新"); loadTokens(); }
+    const li = prompt("额度（token 总量，留空=不限）：", limitBtn.dataset.current || "");
+    if (li === null) return;
+    const wi = prompt("周期天数（留空=累计，如 30=每 30 天滚动）：", limitBtn.dataset.window || "");
+    if (wi === null) return;
+    const limit = li.trim() === "" ? null : Math.max(0, parseInt(li, 10) || 0);
+    const window_days = wi.trim() === "" ? null : Math.max(0, parseInt(wi, 10) || 0);
+    try { await api("PATCH", "/admin/api/tokens/" + limitBtn.dataset.limit, { limit, window_days }); toast("额度已更新"); loadTokens(); }
+    catch (err) { showErr(err.message); }
+    return;
+  }
+  const resetBtn = e.target.closest("[data-reset]");
+  if (resetBtn) {
+    if (!confirm(`清零「${resetBtn.dataset.name}」的额度计数？历史用量记录保留，仅重置配额起点。`)) return;
+    try { await api("POST", "/admin/api/tokens/" + resetBtn.dataset.reset + "/reset"); toast("已清零"); loadTokens(); }
     catch (err) { showErr(err.message); }
     return;
   }
@@ -710,6 +747,7 @@ document.getElementById("tokens-body").addEventListener("click", async (e) => {
 
 document.getElementById("usage-refresh").addEventListener("click", () => usageView === "agg" ? loadUsageAgg() : loadUsage());
 document.getElementById("usage-filter").addEventListener("change", loadUsage);
+document.getElementById("usage-export").addEventListener("click", exportUsageCsv);
 
 document.querySelectorAll(".tabs button").forEach(btn => {
   btn.addEventListener("click", () => {

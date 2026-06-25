@@ -117,8 +117,15 @@ async fn read_auth_file(path: &Path) -> Result<Value, AppError> {
 
 async fn write_auth_file(path: &Path, auth: &Value) -> Result<(), AppError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let tmp = dir.join(format!(".auth.json.{}.{}.tmp", std::process::id(), now_ms()));
-    let body = format!("{}\n", serde_json::to_string_pretty(auth).unwrap_or_default());
+    let tmp = dir.join(format!(
+        ".auth.json.{}.{}.tmp",
+        std::process::id(),
+        now_ms()
+    ));
+    let body = format!(
+        "{}\n",
+        serde_json::to_string_pretty(auth).unwrap_or_default()
+    );
 
     tokio::fs::write(&tmp, body)
         .await
@@ -216,9 +223,7 @@ impl CodexAuth {
             ("client_id", self.config.codex_client_id.clone()),
         ];
 
-        let json = self
-            .post_token(&form, "Codex OAuth refresh failed")
-            .await?;
+        let json = self.post_token(&form, "Codex OAuth refresh failed").await?;
 
         let mut updated = auth.clone();
         let tokens = updated
@@ -243,7 +248,11 @@ impl CodexAuth {
             tokens.insert("account_id".to_string(), v.clone());
         }
 
-        if updated.get("auth_mode").map(|v| v.is_null()).unwrap_or(true) {
+        if updated
+            .get("auth_mode")
+            .map(|v| v.is_null())
+            .unwrap_or(true)
+        {
             updated["auth_mode"] = json!("chatgpt");
         }
         updated["last_refresh"] = json!(iso8601(now_ms()));
@@ -269,7 +278,11 @@ impl CodexAuth {
             .await
             .map_err(|e| {
                 if e.is_timeout() {
-                    AppError::new(504, format!("{context}: request timed out"), "upstream_timeout")
+                    AppError::new(
+                        504,
+                        format!("{context}: request timed out"),
+                        "upstream_timeout",
+                    )
                 } else {
                     AppError::from(e)
                 }
@@ -424,13 +437,20 @@ impl CodexAuth {
                 .or_else(|| json.get("error"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("Failed to start device login");
-            return Err(AppError::new(status, message.to_string(), "authentication_error"));
+            return Err(AppError::new(
+                status,
+                message.to_string(),
+                "authentication_error",
+            ));
         }
 
         let device_auth_id = json.get("device_auth_id").cloned().unwrap_or(Value::Null);
         let user_code = json.get("user_code").cloned().unwrap_or(Value::Null);
         let interval = json.get("interval").and_then(|v| v.as_i64()).unwrap_or(5);
-        let expires_in = json.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(900);
+        let expires_in = json
+            .get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(900);
 
         Ok(json!({
             "device_auth_id": device_auth_id,
@@ -473,7 +493,11 @@ impl CodexAuth {
                 .or_else(|| json.get("error"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("Device login failed");
-            return Err(AppError::new(status, message.to_string(), "authentication_error"));
+            return Err(AppError::new(
+                status,
+                message.to_string(),
+                "authentication_error",
+            ));
         }
 
         let Some(code) = json.get("authorization_code").and_then(|v| v.as_str()) else {
@@ -487,7 +511,10 @@ impl CodexAuth {
         let form = [
             ("grant_type", "authorization_code".to_string()),
             ("code", code.to_string()),
-            ("redirect_uri", self.config.codex_device_redirect_uri.clone()),
+            (
+                "redirect_uri",
+                self.config.codex_device_redirect_uri.clone(),
+            ),
             ("client_id", self.config.codex_client_id.clone()),
             ("code_verifier", code_verifier.to_string()),
         ];

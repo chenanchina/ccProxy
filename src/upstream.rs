@@ -4,7 +4,9 @@ use crate::error::AppError;
 use crate::sse::{parse_sse, SseEvent};
 use futures_util::StreamExt;
 use rand::RngCore;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT,
+};
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -111,7 +113,10 @@ impl Upstream {
                         .map_err(|_| AppError::config("Invalid OPENAI_API_KEY"))?,
                 );
                 Ok(Prepared {
-                    url: format!("{}/responses", self.config.openai_api_base.trim_end_matches('/')),
+                    url: format!(
+                        "{}/responses",
+                        self.config.openai_api_base.trim_end_matches('/')
+                    ),
                     headers,
                 })
             }
@@ -134,7 +139,10 @@ impl Upstream {
                 // Mimic the real Codex CLI so the ChatGPT backend treats us as a
                 // first-class client (avoids unknown-originator throttling and
                 // keeps prompt caching keyed to a stable session).
-                headers.insert(HeaderName::from_static("originator"), HeaderValue::from_static("codex_cli_rs"));
+                headers.insert(
+                    HeaderName::from_static("originator"),
+                    HeaderValue::from_static("codex_cli_rs"),
+                );
                 if let Ok(val) = HeaderValue::from_str(&self.session_id) {
                     headers.insert(HeaderName::from_static("session_id"), val);
                 }
@@ -148,7 +156,10 @@ impl Upstream {
                     headers.insert(USER_AGENT, val);
                 }
                 Ok(Prepared {
-                    url: format!("{}/responses", self.config.codex_api_base.trim_end_matches('/')),
+                    url: format!(
+                        "{}/responses",
+                        self.config.codex_api_base.trim_end_matches('/')
+                    ),
                     headers,
                 })
             }
@@ -162,10 +173,7 @@ impl Upstream {
                 // With store:false the only way to carry reasoning across turns is
                 // to ask the backend to return encrypted reasoning content.
                 if obj.contains_key("reasoning") {
-                    obj.insert(
-                        "include".into(),
-                        json!(["reasoning.encrypted_content"]),
-                    );
+                    obj.insert("include".into(), json!(["reasoning.encrypted_content"]));
                 }
             }
         }
@@ -198,9 +206,9 @@ impl Upstream {
             let events = parse_sse(resp.bytes_stream(), self.config.sse_max_frame_bytes);
             collect_streamed_response(events).await
         } else {
-            resp.json::<Value>()
-                .await
-                .map_err(|e| AppError::new(502, format!("Invalid upstream JSON: {e}"), "upstream_error"))
+            resp.json::<Value>().await.map_err(|e| {
+                AppError::new(502, format!("Invalid upstream JSON: {e}"), "upstream_error")
+            })
         }
     }
 
@@ -226,7 +234,10 @@ impl Upstream {
             return Err(upstream_error(resp).await);
         }
 
-        Ok(parse_sse(resp.bytes_stream(), self.config.sse_max_frame_bytes))
+        Ok(parse_sse(
+            resp.bytes_stream(),
+            self.config.sse_max_frame_bytes,
+        ))
     }
 
     /// Raw passthrough for the native Codex/OpenAI Responses path. Forwards the
@@ -316,8 +327,16 @@ where
         match typ.as_str() {
             "response.created" => {
                 if let Some(r) = data.get("response") {
-                    id = r.get("id").and_then(|v| v.as_str()).map(String::from).or(id);
-                    model = r.get("model").and_then(|v| v.as_str()).map(String::from).or(model);
+                    id = r
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .or(id);
+                    model = r
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .or(model);
                 }
             }
             "response.output_text.delta" => {
@@ -325,11 +344,9 @@ where
                     text.push_str(d);
                 }
             }
-            "response.output_text.done" => {
-                if text.is_empty() {
-                    if let Some(t) = data.get("text").and_then(|v| v.as_str()) {
-                        text = t.to_string();
-                    }
+            "response.output_text.done" if text.is_empty() => {
+                if let Some(t) = data.get("text").and_then(|v| v.as_str()) {
+                    text = t.to_string();
                 }
             }
             "response.output_item.added" => {
@@ -362,7 +379,10 @@ where
                         "arguments": "",
                     })
                 });
-                let prev = current.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
+                let prev = current
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let delta = data.get("delta").and_then(|v| v.as_str()).unwrap_or("");
                 current["arguments"] = json!(format!("{prev}{delta}"));
                 upsert(&mut fn_keys, &mut fn_calls, key, current);
@@ -378,7 +398,10 @@ where
                         "arguments": "",
                     })
                 });
-                let existing = current.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
+                let existing = current
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if existing.is_empty() {
                     if let Some(a) = data.get("arguments").and_then(|v| v.as_str()) {
                         current["arguments"] = json!(a);
@@ -390,13 +413,20 @@ where
                 if let Some(item) = data.get("item") {
                     if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
                         let key = fn_key(data, item);
-                        let current = fn_calls.get(&key).cloned().unwrap_or(json!({ "type": "function_call" }));
+                        let current = fn_calls
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or(json!({ "type": "function_call" }));
                         let args = current
                             .get("arguments")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(String::from)
-                            .or_else(|| item.get("arguments").and_then(|v| v.as_str()).map(String::from))
+                            .or_else(|| {
+                                item.get("arguments")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from)
+                            })
                             .unwrap_or_default();
                         upsert(
                             &mut fn_keys,
@@ -413,22 +443,36 @@ where
                     }
                 }
             }
-            "response.completed" | "response.done" => {
-                if data.get("response").is_some() || data.get("id").is_some() {
-                    let resp = data.get("response").cloned().unwrap_or_else(|| data.clone());
-                    if let Some(u) = resp.get("usage") {
-                        usage = u.clone();
-                    }
-                    id = resp.get("id").and_then(|v| v.as_str()).map(String::from).or(id);
-                    model = resp.get("model").and_then(|v| v.as_str()).map(String::from).or(model);
-                    completed = Some(resp);
+            "response.completed" | "response.done"
+                if (data.get("response").is_some() || data.get("id").is_some()) =>
+            {
+                let resp = data
+                    .get("response")
+                    .cloned()
+                    .unwrap_or_else(|| data.clone());
+                if let Some(u) = resp.get("usage") {
+                    usage = u.clone();
                 }
+                id = resp
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or(id);
+                model = resp
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or(model);
+                completed = Some(resp);
             }
             _ => {}
         }
     }
 
-    let function_items: Vec<Value> = fn_keys.iter().filter_map(|k| fn_calls.get(k).cloned()).collect();
+    let function_items: Vec<Value> = fn_keys
+        .iter()
+        .filter_map(|k| fn_calls.get(k).cloned())
+        .collect();
 
     if let Some(mut resp) = completed {
         if !has_output(&resp) {
@@ -488,25 +532,42 @@ fn fn_key(data: &Value, item: &Value) -> String {
 }
 
 fn has_output(resp: &Value) -> bool {
-    resp.get("output").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false)
+    resp.get("output")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
 }
 
 fn has_text_output(resp: &Value) -> bool {
-    resp.get("output").and_then(|v| v.as_array()).map(|items| {
-        items.iter().any(|item| {
-            item.get("content").and_then(|c| c.as_array()).map(|content| {
-                content.iter().any(|c| {
-                    matches!(c.get("type").and_then(|v| v.as_str()), Some("output_text") | Some("text"))
-                })
-            }).unwrap_or(false)
+    resp.get("output")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("content")
+                    .and_then(|c| c.as_array())
+                    .map(|content| {
+                        content.iter().any(|c| {
+                            matches!(
+                                c.get("type").and_then(|v| v.as_str()),
+                                Some("output_text") | Some("text")
+                            )
+                        })
+                    })
+                    .unwrap_or(false)
+            })
         })
-    }).unwrap_or(false)
+        .unwrap_or(false)
 }
 
 fn has_function_output(resp: &Value) -> bool {
-    resp.get("output").and_then(|v| v.as_array()).map(|items| {
-        items.iter().any(|item| item.get("type").and_then(|v| v.as_str()) == Some("function_call"))
-    }).unwrap_or(false)
+    resp.get("output")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item.get("type").and_then(|v| v.as_str()) == Some("function_call"))
+        })
+        .unwrap_or(false)
 }
 
 fn text_output_items(text: &str) -> Vec<Value> {

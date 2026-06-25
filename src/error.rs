@@ -107,6 +107,10 @@ impl From<reqwest::Error> for AppError {
                 "upstream_connection_error",
             );
         }
-        AppError::new(502, format!("Upstream request failed: {e}"), "upstream_error")
+        AppError::new(
+            502,
+            format!("Upstream request failed: {e}"),
+            "upstream_error",
+        )
     }
 }

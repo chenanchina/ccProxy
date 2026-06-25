@@ -6,10 +6,16 @@ use std::time::Duration;
 const REASONING_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 
 fn static_models() -> Vec<Value> {
-    ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]
-        .iter()
-        .map(|id| json!({ "id": id, "object": "model", "owned_by": "openai" }))
-        .collect()
+    [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+    ]
+    .iter()
+    .map(|id| json!({ "id": id, "object": "model", "owned_by": "openai" }))
+    .collect()
 }
 
 pub async fn list_models(upstream: &Upstream) -> Vec<Value> {
@@ -127,7 +133,11 @@ fn normalize_models(models: Option<&Value>) -> Vec<Value> {
 fn with_reasoning_aliases(models: Vec<Value>) -> Vec<Value> {
     let mut out = Vec::new();
     for model in models {
-        let id = model.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let id = model
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         let display = model
             .get("display_name")
             .and_then(|v| v.as_str())
@@ -137,7 +147,11 @@ fn with_reasoning_aliases(models: Vec<Value>) -> Vec<Value> {
             .get("supported_reasoning_levels")
             .and_then(|v| v.as_array())
             .filter(|a| !a.is_empty())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_else(|| REASONING_EFFORTS.iter().map(|s| s.to_string()).collect());
 
         out.push(model.clone());

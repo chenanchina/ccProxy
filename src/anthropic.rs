@@ -100,9 +100,17 @@ fn validate(request: &Value) -> Result<(), AppError> {
     let max_tokens = request.get("max_tokens").and_then(|v| v.as_f64());
     match max_tokens {
         Some(n) if n.is_finite() && n > 0.0 => {}
-        _ => return Err(AppError::bad_request("max_tokens must be a positive number")),
+        _ => {
+            return Err(AppError::bad_request(
+                "max_tokens must be a positive number",
+            ))
+        }
     }
-    if !request.get("messages").map(|v| v.is_array()).unwrap_or(false) {
+    if !request
+        .get("messages")
+        .map(|v| v.is_array())
+        .unwrap_or(false)
+    {
         return Err(AppError::bad_request("messages must be an array"));
     }
     Ok(())
@@ -120,7 +128,9 @@ pub fn anthropic_to_responses(
     payload.insert("model".into(), json!(map_model_id(&model.id, model_map)));
     payload.insert(
         "input".into(),
-        Value::Array(messages_to_input(request.get("messages").and_then(|v| v.as_array()).unwrap())),
+        Value::Array(messages_to_input(
+            request.get("messages").and_then(|v| v.as_array()).unwrap(),
+        )),
     );
     if let Some(mt) = request.get("max_tokens") {
         payload.insert("max_output_tokens".into(), mt.clone());
@@ -138,15 +148,13 @@ pub fn anthropic_to_responses(
     }
 
     let instructions = system_to_text(request.get("system"));
-    let instructions = instructions
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            if default_instructions.is_empty() {
-                "You are a helpful assistant.".to_string()
-            } else {
-                default_instructions.to_string()
-            }
-        });
+    let instructions = instructions.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+        if default_instructions.is_empty() {
+            "You are a helpful assistant.".to_string()
+        } else {
+            default_instructions.to_string()
+        }
+    });
     payload.insert("instructions".into(), json!(instructions));
 
     for key in ["temperature", "top_p"] {
@@ -283,17 +291,27 @@ fn content_to_text_parts(content: &Value) -> Vec<String> {
                 return vec![s.to_string()];
             }
             match block.get("type").and_then(|v| v.as_str()) {
-                Some("text") => vec![block.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string()],
+                Some("text") => vec![block
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()],
                 Some("tool_result") => vec![format!(
                     "Tool result {}:\n{}",
-                    block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    block
+                        .get("tool_use_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
                     tool_result_content_to_text(block.get("content"))
                 )],
                 Some("tool_use") => vec![format!(
                     "Tool use {} {}:\n{}",
                     block.get("name").and_then(|v| v.as_str()).unwrap_or(""),
                     block.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                    serde_json::to_string(&block.get("input").cloned().unwrap_or_else(|| json!({}))).unwrap_or_default()
+                    serde_json::to_string(
+                        &block.get("input").cloned().unwrap_or_else(|| json!({}))
+                    )
+                    .unwrap_or_default()
                 )],
                 Some("image") => vec!["[image omitted by local proxy]".to_string()],
                 other => vec![format!(
@@ -353,7 +371,9 @@ fn tool_choice_to_responses(choice: Option<&Value>) -> Option<Value> {
     match choice.get("type").and_then(|v| v.as_str()) {
         Some("auto") => Some(json!("auto")),
         Some("any") => Some(json!("required")),
-        Some("tool") => Some(json!({ "type": "function", "name": choice.get("name").cloned().unwrap_or(Value::Null) })),
+        Some("tool") => Some(
+            json!({ "type": "function", "name": choice.get("name").cloned().unwrap_or(Value::Null) }),
+        ),
         _ => None,
     }
 }
@@ -519,7 +539,10 @@ fn response_output_to_blocks(response: &Value, emit_thinking: bool) -> Vec<Value
             if item.get("type").and_then(|v| v.as_str()) == Some("message") {
                 if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
                     for c in content {
-                        if matches!(c.get("type").and_then(|v| v.as_str()), Some("output_text") | Some("text")) {
+                        if matches!(
+                            c.get("type").and_then(|v| v.as_str()),
+                            Some("output_text") | Some("text")
+                        ) {
                             blocks.push(json!({
                                 "type": "text",
                                 "text": c.get("text").and_then(|v| v.as_str()).unwrap_or(""),
@@ -569,7 +592,10 @@ fn parse_json_object(raw: Option<&Value>) -> Value {
 }
 
 fn infer_stop_reason(response: &Value, content: &[Value]) -> String {
-    if content.iter().any(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use")) {
+    if content
+        .iter()
+        .any(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+    {
         return "tool_use".to_string();
     }
     if response
@@ -644,7 +670,10 @@ fn text_key(data: &Value) -> String {
         return k;
     }
     let item = num_or_str(data, "item_id").unwrap_or_else(|| "text".to_string());
-    let content_index = data.get("content_index").and_then(|v| v.as_i64()).unwrap_or(0);
+    let content_index = data
+        .get("content_index")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     format!("{item}:{content_index}")
 }
 
@@ -724,12 +753,19 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
 
     match typ.as_str() {
         "response.created" => {
-            if let Some(id) = data.get("response").and_then(|r| r.get("id")).and_then(|v| v.as_str()) {
+            if let Some(id) = data
+                .get("response")
+                .and_then(|r| r.get("id"))
+                .and_then(|v| v.as_str())
+            {
                 state.message_id = id.to_string();
             }
         }
         "response.completed" | "response.done" => {
-            let response = data.get("response").cloned().unwrap_or_else(|| data.clone());
+            let response = data
+                .get("response")
+                .cloned()
+                .unwrap_or_else(|| data.clone());
             if let Some(usage) = response.get("usage") {
                 if let Some(i) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
                     state.input_tokens = i;
@@ -750,12 +786,16 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
                 state.stop_reason = inferred;
             }
         }
-        "response.output_item.added" => {
-            if data.get("item").and_then(|i| i.get("type")).and_then(|v| v.as_str()) == Some("function_call") {
-                let key = fn_key(data);
-                let item = data.get("item").cloned().unwrap_or(Value::Null);
-                push_opt(&mut frames, start_function_block(state, &key, &item));
-            }
+        "response.output_item.added"
+            if data
+                .get("item")
+                .and_then(|i| i.get("type"))
+                .and_then(|v| v.as_str())
+                == Some("function_call") =>
+        {
+            let key = fn_key(data);
+            let item = data.get("item").cloned().unwrap_or(Value::Null);
+            push_opt(&mut frames, start_function_block(state, &key, &item));
         }
         "response.output_text.delta" => {
             let key = text_key(data);
@@ -773,10 +813,12 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
         }
         "response.function_call_arguments.delta" => {
             let key = fn_key(data);
-            let item = data.get("item").cloned().unwrap_or_else(|| json!({
-                "id": data.get("item_id").cloned().unwrap_or(Value::Null),
-                "name": data.get("name").cloned().unwrap_or(Value::Null),
-            }));
+            let item = data.get("item").cloned().unwrap_or_else(|| {
+                json!({
+                    "id": data.get("item_id").cloned().unwrap_or(Value::Null),
+                    "name": data.get("name").cloned().unwrap_or(Value::Null),
+                })
+            });
             push_opt(&mut frames, start_function_block(state, &key, &item));
             state.function_argument_deltas.insert(key.clone());
             if let Some(&index) = state.function_blocks.get(&key) {
@@ -792,11 +834,13 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
         }
         "response.function_call_arguments.done" => {
             let key = fn_key(data);
-            let item = data.get("item").cloned().unwrap_or_else(|| json!({
-                "id": data.get("item_id").cloned().unwrap_or(Value::Null),
-                "call_id": data.get("call_id").cloned().unwrap_or(Value::Null),
-                "name": data.get("name").cloned().unwrap_or(Value::Null),
-            }));
+            let item = data.get("item").cloned().unwrap_or_else(|| {
+                json!({
+                    "id": data.get("item_id").cloned().unwrap_or(Value::Null),
+                    "call_id": data.get("call_id").cloned().unwrap_or(Value::Null),
+                    "name": data.get("name").cloned().unwrap_or(Value::Null),
+                })
+            });
             push_opt(&mut frames, start_function_block(state, &key, &item));
             let args = data.get("arguments").and_then(|v| v.as_str());
             if let (Some(args), false) = (args, state.function_argument_deltas.contains(&key)) {
@@ -830,7 +874,11 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
                             "content_block": { "type": "thinking", "thinking": "", "signature": "" },
                         }),
                     ));
-                    if let Some(text) = block.get("thinking").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    if let Some(text) = block
+                        .get("thinking")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
                         frames.push(encode_sse(
                             "content_block_delta",
                             &json!({
@@ -968,7 +1016,12 @@ mod tests {
 
     #[test]
     fn parses_reasoning_effort_variants() {
-        for input in ["gpt-5.5-high", "gpt-5.5 high", "gpt-5.5:high", "gpt-5.5/high"] {
+        for input in [
+            "gpt-5.5-high",
+            "gpt-5.5 high",
+            "gpt-5.5:high",
+            "gpt-5.5/high",
+        ] {
             let p = parse_model_and_reasoning(input);
             assert_eq!(p.id, "gpt-5.5", "input={input}");
             assert_eq!(p.reasoning_effort.as_deref(), Some("high"), "input={input}");
@@ -1053,7 +1106,10 @@ mod tests {
         let map = ModelMap::default();
         let mk = |model: &str| {
             let req = json!({ "model": model, "max_tokens": 10, "messages": [{ "role": "user", "content": "hi" }] });
-            anthropic_to_responses(&req, "d", &map).unwrap()["model"].as_str().unwrap().to_string()
+            anthropic_to_responses(&req, "d", &map).unwrap()["model"]
+                .as_str()
+                .unwrap()
+                .to_string()
         };
         assert_eq!(mk("claude-sonnet-4-5"), "gpt-5.5");
         assert_eq!(mk("claude-opus-4-1"), "gpt-5.5");
@@ -1121,7 +1177,11 @@ mod tests {
         ];
         let mut all = String::new();
         for e in events {
-            let ev = SseEvent { event: "message".into(), data: e, done: false };
+            let ev = SseEvent {
+                event: "message".into(),
+                data: e,
+                done: false,
+            };
             for f in map_stream_event(&ev, &mut sm) {
                 all.push_str(&f);
             }

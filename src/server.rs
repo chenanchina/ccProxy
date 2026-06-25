@@ -41,11 +41,15 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
         .route("/admin", get(dashboard))
-        .route("/admin/api/tokens", get(admin_list_tokens).post(admin_create_token))
+        .route(
+            "/admin/api/tokens",
+            get(admin_list_tokens).post(admin_create_token),
+        )
         .route(
             "/admin/api/tokens/{id}",
             patch(admin_update_token).delete(admin_delete_token),
         )
+        .route("/admin/api/tokens/{id}/reset", post(admin_reset_token))
         .route("/admin/api/usage", get(admin_usage))
         .route("/admin/api/account", get(admin_account))
         .fallback(not_found)
@@ -56,7 +60,10 @@ pub fn router(state: AppState) -> Router {
 // ---- middleware ----
 
 fn set_cors(headers: &mut HeaderMap) {
-    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
         HeaderValue::from_static("GET,POST,OPTIONS"),
@@ -272,7 +279,8 @@ async fn auth_callback(
     }
 
     let (Some(code), Some(st)) = (query.get("code"), query.get("state")) else {
-        return AppError::bad_request("OAuth callback requires code and state").into_openai_response();
+        return AppError::bad_request("OAuth callback requires code and state")
+            .into_openai_response();
     };
 
     match auth.finish_login(code, st).await {
@@ -340,8 +348,12 @@ async fn models(State(state): State<AppState>) -> Response {
 }
 
 async fn not_found(method: Method, uri: axum::http::Uri) -> Response {
-    AppError::new(404, format!("No route for {method} {}", uri.path()), "not_found_error")
-        .into_openai_response()
+    AppError::new(
+        404,
+        format!("No route for {method} {}", uri.path()),
+        "not_found_error",
+    )
+    .into_openai_response()
 }
 
 // ---- /v1/messages (Anthropic) ----
@@ -371,7 +383,10 @@ async fn messages_inner(
         &state.config.default_instructions,
         &state.config.model_map,
     )?;
-    let stream = request.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let stream = request
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let emit_thinking = anthropic::thinking_enabled(&request);
     let model = request.get("model").cloned().unwrap_or(Value::Null);
     let model_str = model.as_str().map(|s| s.to_string());
@@ -474,8 +489,14 @@ async fn responses_inner(
     request: Value,
     token_id: Option<i64>,
 ) -> Result<Response, AppError> {
-    let model_str = request.get("model").and_then(|v| v.as_str()).map(String::from);
-    let stream_flag = request.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let model_str = request
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let stream_flag = request
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let upstream = state.upstream.passthrough(request).await?;
     let status = StatusCode::from_u16(upstream.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -506,7 +527,7 @@ async fn responses_inner(
                     yield Ok::<Bytes, std::io::Error>(bytes);
                 }
                 Err(e) => {
-                    yield Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+                    yield Err(std::io::Error::other(e));
                     break;
                 }
             }
@@ -604,7 +625,11 @@ async fn admin_create_token(
         Ok(v) => v,
         Err(e) => return e.into_openai_response(),
     };
-    let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let name = req
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     if name.is_empty() {
         return AppError::bad_request("name is required").into_openai_response();
     }
@@ -614,7 +639,8 @@ async fn admin_create_token(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
     let limit = req.get("limit").and_then(|v| v.as_i64());
-    match state.db.create_token(name, note, limit) {
+    let window = req.get("window_days").and_then(|v| v.as_i64());
+    match state.db.create_token(name, note, limit, window) {
         Ok(token) => (StatusCode::CREATED, Json(token)).into_response(),
         Err(e) => e.into_openai_response(),
     }
@@ -637,9 +663,28 @@ async fn admin_update_token(
     let name = req.get("name").and_then(|v| v.as_str());
     let note = req.get("note").and_then(|v| v.as_str());
     let disabled = req.get("disabled").and_then(|v| v.as_bool());
-    // Tri-state: key absent = leave as-is, null = clear quota, number = set quota.
+    // Tri-state: key absent = leave as-is, null = clear, number = set.
     let limit = req.get("limit").map(|v| v.as_i64());
-    match state.db.update_token(id, name, note, disabled, limit) {
+    let window = req.get("window_days").map(|v| v.as_i64());
+    match state
+        .db
+        .update_token(id, name, note, disabled, limit, window)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn admin_reset_token(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    match state.db.reset_token_usage(id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_openai_response(),
     }

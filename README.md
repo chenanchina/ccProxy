@@ -159,6 +159,7 @@ App 内置并启动同一个 Rust 代理二进制。改了 `src/dashboard.html` 
 | `ADMIN_API_KEY` | — | 设置后启用 `/admin` 后台 |
 | `PROXY_API_KEY` | — | 主密钥,绕过 per-user 统计 |
 | `DB_PATH` | `~/.ccproxy/ccproxy.db` | SQLite 文件 |
+| `USAGE_RETENTION_DAYS` | `90` | 自动清理多少天前的用量记录(0=不清理) |
 | `OPENAI_API_KEY` | — | `api-key` 模式必填 |
 | `CODEX_AUTH_FILE` | `~/.codex/auth.json` | Codex 登录态文件 |
 | `UPSTREAM_PROXY_URL` | — | 上游代理,支持 `http/https/socks5` |
@@ -166,6 +167,14 @@ App 内置并启动同一个 Rust 代理二进制。改了 `src/dashboard.html` 
 | `STREAM_IDLE_TIMEOUT_MS` | `300000` | 流式空闲超时 |
 
 上游代理未显式设置 `UPSTREAM_PROXY_URL` 时,会依次读取 `https_proxy` / `http_proxy` / `all_proxy`。
+
+## 安全
+
+- **默认只监听 `127.0.0.1`**。要对外提供服务才改 `HOST=0.0.0.0`,并自行控制防火墙/安全组。
+- **凭证走明文头传输**:`ADMIN_API_KEY`、`PROXY_API_KEY`、`sk-ccp-...` token 都通过 HTTP 头发送。对外暴露时**务必在前面套一层 HTTPS**(nginx / Caddy 反代),不要让管理后台和 token 走裸 HTTP 公网。
+- 反代后端记得透传真实客户端 IP(`X-Forwarded-For`)。
+- **登录态文件 `~/.codex/auth.json` 是敏感数据**,代理会以 `0600` 权限原子写入;注意备份和目录权限。
+- 建议给分发的 token 设**额度**(可选滚动周期),避免单个 token 失控消耗。
 
 ## 构建
 

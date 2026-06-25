@@ -49,6 +49,26 @@ async fn main() {
     };
 
     let upstream = Arc::new(Upstream::new(config.clone(), http, codex_auth.clone()));
+
+    // Periodically prune old usage rows so the database does not grow unbounded.
+    if config.usage_retention_days > 0 {
+        let db = db.clone();
+        let retention_ms = config.usage_retention_days as i64 * 86_400_000;
+        tokio::spawn(async move {
+            loop {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let removed = db.purge_usage_older_than(now - retention_ms);
+                if removed > 0 {
+                    println!("usage retention: pruned {removed} old records");
+                }
+                tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+            }
+        });
+    }
+
     let state = server::AppState {
         config: config.clone(),
         upstream,
@@ -71,7 +91,11 @@ async fn main() {
     println!("ccProxy listening on http://{local}");
     println!(
         "auth mode: {}",
-        if config.auth_mode == AuthMode::Codex { "codex" } else { "api-key" }
+        if config.auth_mode == AuthMode::Codex {
+            "codex"
+        } else {
+            "api-key"
+        }
     );
     if let Some(proxy) = &config.upstream_proxy_url {
         println!("upstream proxy: {proxy}");
