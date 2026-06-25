@@ -133,7 +133,7 @@
   tbody tr:last-child td { border-bottom: none; }
   tbody tr { transition: background .12s; }
   tbody tr:hover { background: var(--surface-2); }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .name-main { font-weight: 550; }
   .name-note { color: var(--mut); font-size: 12px; margin-top: 2px; }
 
@@ -564,7 +564,7 @@ async function loadTokens() {
         <td class="num">${fmtNum(t.output_tokens)}</td>
         <td class="num">${fmtNum(t.reasoning_tokens)}</td>
         <td class="num">${limitCell(t)}</td>
-        <td class="muted" style="font-size:12.5px">${fmtTs(t.last_used_at)}</td>
+        <td class="muted" style="font-size:12.5px;white-space:nowrap">${fmtTs(t.last_used_at)}</td>
         <td style="white-space:nowrap;text-align:right">
           <button class="link" data-limit="${t.id}" data-current="${t.token_limit ?? ''}">额度</button>
           <button class="link" data-toggle="${t.id}" data-disabled="${t.disabled}">${t.disabled ? "启用" : "停用"}</button>
