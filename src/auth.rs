@@ -379,24 +379,145 @@ impl CodexAuth {
             .post_token(&form, "Codex OAuth token exchange failed")
             .await?;
 
-        let auth = json!({
-            "auth_mode": "chatgpt",
-            "OPENAI_API_KEY": null,
-            "tokens": {
-                "id_token": json.get("id_token").cloned().unwrap_or(Value::Null),
-                "access_token": json.get("access_token").cloned().unwrap_or(Value::Null),
-                "refresh_token": json.get("refresh_token").cloned().unwrap_or(Value::Null),
-                "account_id": json.get("account_id")
-                    .or_else(|| json.get("chatgpt_account_id"))
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            },
-            "last_refresh": iso8601(now_ms()),
-        });
-
+        let auth = build_chatgpt_auth(&json);
         write_auth_file(&self.config.codex_auth_file, &auth).await?;
         Ok(token_summary(&auth["tokens"]))
     }
+
+    /// Posts a form and returns the raw status + parsed body without treating a
+    /// non-2xx response as an error, so callers can branch on pending/expired.
+    async fn post_form_raw(
+        &self,
+        url: &str,
+        form: &[(&str, String)],
+    ) -> Result<(u16, Value), AppError> {
+        let resp = self
+            .http
+            .post(url)
+            .timeout(Duration::from_millis(self.config.codex_auth_timeout_ms))
+            .form(form)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    AppError::new(504, "Device auth request timed out", "upstream_timeout")
+                } else {
+                    AppError::from(e)
+                }
+            })?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        let json: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
+        Ok((status, json))
+    }
+
+    /// Starts the headless device-code login. Returns the user code and the URL
+    /// the user should open; no localhost callback is required.
+    pub async fn start_device_login(&self) -> Result<Value, AppError> {
+        let form = [("client_id", self.config.codex_client_id.clone())];
+        let (status, json) = self
+            .post_form_raw(&self.config.codex_device_usercode_url, &form)
+            .await?;
+        if !(200..300).contains(&status) {
+            let message = json
+                .get("error_description")
+                .or_else(|| json.get("error"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Failed to start device login");
+            return Err(AppError::new(status, message.to_string(), "authentication_error"));
+        }
+
+        let device_auth_id = json.get("device_auth_id").cloned().unwrap_or(Value::Null);
+        let user_code = json.get("user_code").cloned().unwrap_or(Value::Null);
+        let interval = json.get("interval").and_then(|v| v.as_i64()).unwrap_or(5);
+        let expires_in = json.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(900);
+
+        Ok(json!({
+            "device_auth_id": device_auth_id,
+            "user_code": user_code,
+            "verification_url": self.config.codex_device_verification_url,
+            "interval": interval,
+            "expires_in": expires_in,
+        }))
+    }
+
+    /// Polls the device-code endpoint. While the user has not yet approved, returns
+    /// `{ "status": "pending" }`; on success writes the auth file and returns the
+    /// token summary with `status: "complete"`.
+    pub async fn poll_device_login(
+        &self,
+        device_auth_id: &str,
+        user_code: &str,
+    ) -> Result<Value, AppError> {
+        let form = [
+            ("device_auth_id", device_auth_id.to_string()),
+            ("user_code", user_code.to_string()),
+        ];
+        let (status, json) = self
+            .post_form_raw(&self.config.codex_device_token_url, &form)
+            .await?;
+
+        if status == 403 || status == 404 {
+            return Ok(json!({ "status": "pending" }));
+        }
+        if status == 410 {
+            return Err(AppError::new(
+                410,
+                "Device code expired. Start the device login again.",
+                "authentication_error",
+            ));
+        }
+        if !(200..300).contains(&status) {
+            let message = json
+                .get("error_description")
+                .or_else(|| json.get("error"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Device login failed");
+            return Err(AppError::new(status, message.to_string(), "authentication_error"));
+        }
+
+        let Some(code) = json.get("authorization_code").and_then(|v| v.as_str()) else {
+            return Ok(json!({ "status": "pending" }));
+        };
+        let code_verifier = json
+            .get("code_verifier")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::config("Device token response missing code_verifier"))?;
+
+        let form = [
+            ("grant_type", "authorization_code".to_string()),
+            ("code", code.to_string()),
+            ("redirect_uri", self.config.codex_device_redirect_uri.clone()),
+            ("client_id", self.config.codex_client_id.clone()),
+            ("code_verifier", code_verifier.to_string()),
+        ];
+        let tokens = self
+            .post_token(&form, "Device code exchange failed")
+            .await?;
+
+        let auth = build_chatgpt_auth(&tokens);
+        write_auth_file(&self.config.codex_auth_file, &auth).await?;
+        let mut summary = token_summary(&auth["tokens"]);
+        summary["status"] = json!("complete");
+        Ok(summary)
+    }
+}
+
+fn build_chatgpt_auth(json: &Value) -> Value {
+    json!({
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": null,
+        "tokens": {
+            "id_token": json.get("id_token").cloned().unwrap_or(Value::Null),
+            "access_token": json.get("access_token").cloned().unwrap_or(Value::Null),
+            "refresh_token": json.get("refresh_token").cloned().unwrap_or(Value::Null),
+            "account_id": json.get("account_id")
+                .or_else(|| json.get("chatgpt_account_id"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        },
+        "last_refresh": iso8601(now_ms()),
+    })
 }
 
 fn account_id_of(auth: &Value) -> Option<String> {

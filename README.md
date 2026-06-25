@@ -14,9 +14,10 @@
 
 - **协议转换**:`/v1/messages` 接受 Anthropic 格式,转发到 Codex Responses 后端,流式与非流式都支持。
 - **两种鉴权后端**:`codex` 模式直接复用 `~/.codex/auth.json` 并自动刷新 OAuth token;`api-key` 模式走标准 OpenAI API。
-- **内置 OAuth 登录**:本机没有 Codex 登录态时,可直接通过 `/auth/login` 走完整登录流程。
+- **内置 OAuth 登录**:本机没有 Codex 登录态时,可走 `/auth/login`(浏览器回调)或 `/auth/device/*`(设备码,无需 localhost,适合远程服务器)。
 - **多用户 Token 管理**:Web 后台为不同使用者分发独立 `sk-ccp-...` token,逐 token 统计请求数与输入/输出/推理 token 消耗。
-- **模型名内联 reasoning effort**:`gpt-5.5-high` / `gpt-5.5:high` / `gpt-5.5 high` 自动拆成 `model` + `reasoning.effort`。
+- **Claude Code 开箱即用**:自动把 `claude-*`(opus/sonnet/haiku,含 `[1m]` 后缀)映射到对应 gpt 模型,并把 Anthropic `thinking` 块转成 `reasoning.effort`;思维链通过加密 reasoning 跨轮保留。
+- **模型名内联 reasoning effort**:`gpt-5.5-high` / `gpt-5.5:high` / `gpt-5.5 high` / `gpt-5.5-max` 自动拆成 `model` + `reasoning.effort`(`max` → `xhigh`)。
 - **上游代理支持**:HTTP / HTTPS / SOCKS5 隧道。
 - **零外部依赖**:单个 Rust 二进制,SQLite 内嵌,macOS App 不依赖 Node。
 
@@ -35,7 +36,8 @@ cargo run --release
 | `GET /v1/models` | 模型列表 |
 | `GET /health` | 健康检查 |
 | `GET /admin` | Token 管理后台 |
-| `GET /auth/login` · `/auth/status` | Codex OAuth 登录 / 状态 |
+| `GET /auth/login` · `/auth/status` | Codex OAuth 登录(浏览器)/ 状态 |
+| `GET /auth/device/start` · `/poll` | Codex 设备码登录(无需回调) |
 
 ### 调用示例
 
@@ -84,6 +86,16 @@ curl -sS http://127.0.0.1:48317/auth/login
 curl -sS http://127.0.0.1:48317/auth/status
 ```
 
+远程/无头服务器没有浏览器回调时,用设备码登录:
+
+```bash
+# 1. 拿到 user_code 和验证地址
+curl -sS http://127.0.0.1:48317/auth/device/start
+# 2. 浏览器打开返回的 verification_url,输入 user_code 完成授权
+# 3. 轮询直到 status=complete(token 会写回 ~/.codex/auth.json)
+curl -sS "http://127.0.0.1:48317/auth/device/poll?device_auth_id=...&user_code=..."
+```
+
 ### API key 模式
 
 ```bash
@@ -98,12 +110,16 @@ OPENAI_AUTH_MODE=api-key OPENAI_API_KEY=sk-... cargo run --release
 ADMIN_API_KEY=admin-secret cargo run --release
 ```
 
-打开 `http://127.0.0.1:48317/admin`,用 `ADMIN_API_KEY` 登录。可以为不同使用者创建独立 token,查看每个 token 的请求数与 token 消耗、随时停用或删除。
+打开 `http://127.0.0.1:48317/admin`,用 `ADMIN_API_KEY` 登录。可以为不同使用者创建独立 token,查看每个 token 的请求数与输入/输出/推理 token 消耗、随时停用或删除。
+
+可选给某个 token 设**额度**(token 总量上限,输入+输出+推理累计):用满后该 token 的请求会被 429 拒绝,直到调高或清除额度。`/v1/messages`(流式与非流式)和 `/v1/responses` 透传的用量都会按 token 计入。
 
 鉴权优先级:
 
-- **`PROXY_API_KEY`** —— 主密钥。客户端带它可直接访问,绕过 per-user 统计。
-- **`sk-ccp-...`** —— 后台为每个使用者生成的 token,推荐分发给普通用户,用量逐个记录。
+- **`PROXY_API_KEY`** —— 主密钥。客户端带它可直接访问,绕过 per-user 统计与额度。
+- **`sk-ccp-...`** —— 后台为每个使用者生成的 token,推荐分发给普通用户,用量逐个记录、可设额度。
+
+> 当 `PROXY_API_KEY` 未设、且尚未创建任何 token 时,接口完全开放;一旦创建了 token(或设了 `PROXY_API_KEY`),未知 key 会被拒绝。
 
 数据默认存到 SQLite `~/.ccproxy/ccproxy.db`,可用 `DB_PATH` 覆盖。
 

@@ -1,14 +1,25 @@
+use crate::config::ModelMap;
 use crate::error::AppError;
 use crate::sse::{encode_sse, SseEvent};
+use base64::Engine;
 use rand::RngCore;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 
-const REASONING_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
+/// Normalizes a reasoning effort string to one of the upstream-supported levels,
+/// accepting common aliases (`max` -> `xhigh`). Returns None when unrecognized.
+fn normalize_effort(s: &str) -> Option<String> {
+    match s.trim().to_lowercase().as_str() {
+        "low" => Some("low".to_string()),
+        "medium" => Some("medium".to_string()),
+        "high" => Some("high".to_string()),
+        "xhigh" | "max" => Some("xhigh".to_string()),
+        _ => None,
+    }
+}
 
 fn is_effort(s: &str) -> bool {
-    let lower = s.to_lowercase();
-    REASONING_EFFORTS.contains(&lower.as_str())
+    normalize_effort(s).is_some()
 }
 
 pub fn new_message_id() -> String {
@@ -37,7 +48,7 @@ pub fn parse_model_and_reasoning(model: &str) -> ParsedModel {
         if is_effort(tail) && !head.is_empty() {
             return ParsedModel {
                 id: head.to_string(),
-                reasoning_effort: Some(tail.to_lowercase()),
+                reasoning_effort: normalize_effort(tail),
             };
         }
     }
@@ -49,7 +60,7 @@ pub fn parse_model_and_reasoning(model: &str) -> ParsedModel {
         if is_effort(tail) && !head.is_empty() {
             return ParsedModel {
                 id: head.to_string(),
-                reasoning_effort: Some(tail.to_lowercase()),
+                reasoning_effort: normalize_effort(tail),
             };
         }
     }
@@ -61,7 +72,7 @@ pub fn parse_model_and_reasoning(model: &str) -> ParsedModel {
         if is_effort(tail) && !head.is_empty() {
             return ParsedModel {
                 id: head.to_string(),
-                reasoning_effort: Some(tail.to_lowercase()),
+                reasoning_effort: normalize_effort(tail),
             };
         }
     }
@@ -80,14 +91,9 @@ fn validate(request: &Value) -> Result<(), AppError> {
     let Some(model) = model else {
         return Err(AppError::bad_request("model is required"));
     };
-    let parsed = parse_model_and_reasoning(model);
-    if let Some(effort) = &parsed.reasoning_effort {
-        if !REASONING_EFFORTS.contains(&effort.as_str()) {
-            return Err(AppError::bad_request("Unsupported reasoning effort"));
-        }
-    }
+    let _ = parse_model_and_reasoning(model);
     if let Some(effort) = request.get("reasoning_effort").and_then(|v| v.as_str()) {
-        if !REASONING_EFFORTS.contains(&effort) {
+        if normalize_effort(effort).is_none() {
             return Err(AppError::bad_request("Unsupported reasoning_effort"));
         }
     }
@@ -105,12 +111,13 @@ fn validate(request: &Value) -> Result<(), AppError> {
 pub fn anthropic_to_responses(
     request: &Value,
     default_instructions: &str,
+    model_map: &ModelMap,
 ) -> Result<Value, AppError> {
     validate(request)?;
     let model = parse_model_and_reasoning(request.get("model").and_then(|v| v.as_str()).unwrap());
 
     let mut payload = Map::new();
-    payload.insert("model".into(), json!(model.id));
+    payload.insert("model".into(), json!(map_model_id(&model.id, model_map)));
     payload.insert(
         "input".into(),
         Value::Array(messages_to_input(request.get("messages").and_then(|v| v.as_array()).unwrap())),
@@ -123,8 +130,9 @@ pub fn anthropic_to_responses(
     let reasoning_effort = request
         .get("reasoning_effort")
         .and_then(|v| v.as_str())
-        .map(String::from)
-        .or(model.reasoning_effort);
+        .and_then(normalize_effort)
+        .or(model.reasoning_effort)
+        .or_else(|| thinking_to_effort(request));
     if let Some(effort) = reasoning_effort {
         payload.insert("reasoning".into(), json!({ "effort": effort }));
     }
@@ -214,6 +222,14 @@ fn message_to_input_items(message: &Value) -> Vec<Value> {
         let btype = block.get("type").and_then(|v| v.as_str());
         if block.is_string() || btype == Some("text") || btype == Some("image") {
             text_parts.extend(content_to_text_parts(block));
+            continue;
+        }
+
+        if role == "assistant" && matches!(btype, Some("thinking") | Some("redacted_thinking")) {
+            if let Some(item) = thinking_block_to_reasoning(block) {
+                flush(&mut items, &mut text_parts);
+                items.push(item);
+            }
             continue;
         }
 
@@ -342,8 +358,137 @@ fn tool_choice_to_responses(choice: Option<&Value>) -> Option<Value> {
     }
 }
 
+/// Maps an Anthropic-family model name (claude / sonnet / opus / haiku, with an
+/// optional `[1m]`-style context suffix) onto the configured upstream gpt model.
+/// Names that already look like a gpt/other model pass through unchanged.
+fn map_model_id(id: &str, map: &ModelMap) -> String {
+    let lower = id.to_lowercase();
+    let base = lower.split('[').next().unwrap_or(&lower).trim();
+    let is_anthropic = base.starts_with("claude")
+        || base.contains("haiku")
+        || base.contains("sonnet")
+        || base.contains("opus");
+    if !is_anthropic {
+        return id.to_string();
+    }
+    if base.contains("haiku") {
+        map.haiku.clone()
+    } else if base.contains("opus") {
+        map.opus.clone()
+    } else {
+        map.sonnet.clone()
+    }
+}
+
+pub fn thinking_enabled(request: &Value) -> bool {
+    request
+        .get("thinking")
+        .and_then(|t| t.get("type"))
+        .and_then(|v| v.as_str())
+        == Some("enabled")
+}
+
+/// Translates an Anthropic `thinking` request block into an upstream reasoning
+/// effort, scaling by the requested budget when present.
+fn thinking_to_effort(request: &Value) -> Option<String> {
+    if !thinking_enabled(request) {
+        return None;
+    }
+    let budget = request
+        .get("thinking")
+        .and_then(|t| t.get("budget_tokens"))
+        .and_then(|v| v.as_i64());
+    Some(
+        match budget {
+            Some(b) if b >= 24_000 => "high",
+            Some(b) if b >= 4_000 => "medium",
+            Some(_) => "low",
+            None => "medium",
+        }
+        .to_string(),
+    )
+}
+
+/// Opaque reference packed into a thinking block's signature so a later turn can
+/// reconstruct the upstream reasoning item (id + encrypted content) verbatim.
+fn encode_reasoning_ref(id: Option<&str>, enc: Option<&str>) -> String {
+    let payload = json!({ "id": id, "enc": enc });
+    base64::engine::general_purpose::STANDARD.encode(payload.to_string())
+}
+
+fn decode_reasoning_ref(sig: &str) -> Option<(Option<String>, Option<String>)> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(sig).ok()?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    let id = v.get("id").and_then(|v| v.as_str()).map(String::from);
+    let enc = v.get("enc").and_then(|v| v.as_str()).map(String::from);
+    if id.is_none() && enc.is_none() {
+        return None;
+    }
+    Some((id, enc))
+}
+
+/// Rebuilds an upstream reasoning input item from an assistant thinking block the
+/// client echoed back. Returns None when the block carries no recoverable state.
+fn thinking_block_to_reasoning(block: &Value) -> Option<Value> {
+    let btype = block.get("type").and_then(|v| v.as_str());
+    let (id, enc, summary_text) = match btype {
+        Some("thinking") => {
+            let sig = block.get("signature").and_then(|v| v.as_str())?;
+            let (id, enc) = decode_reasoning_ref(sig)?;
+            let text = block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+            (id, enc, text.to_string())
+        }
+        Some("redacted_thinking") => {
+            let data = block.get("data").and_then(|v| v.as_str())?;
+            let (id, enc) = decode_reasoning_ref(data)?;
+            (id, enc, String::new())
+        }
+        _ => return None,
+    };
+    enc.as_ref()?;
+    let mut item = Map::new();
+    item.insert("type".into(), json!("reasoning"));
+    if let Some(id) = id {
+        item.insert("id".into(), json!(id));
+    }
+    item.insert("encrypted_content".into(), json!(enc));
+    if !summary_text.is_empty() {
+        item.insert(
+            "summary".into(),
+            json!([{ "type": "summary_text", "text": summary_text }]),
+        );
+    } else {
+        item.insert("summary".into(), json!([]));
+    }
+    Some(Value::Object(item))
+}
+
+/// Converts an upstream reasoning output item into an Anthropic thinking block,
+/// stashing the encrypted content in the signature for the next turn.
+fn reasoning_item_to_thinking(item: &Value) -> Option<Value> {
+    let enc = item.get("encrypted_content").and_then(|v| v.as_str())?;
+    let id = item.get("id").and_then(|v| v.as_str());
+    let text = item
+        .get("summary")
+        .and_then(|v| v.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    Some(json!({
+        "type": "thinking",
+        "thinking": text,
+        "signature": encode_reasoning_ref(id, Some(enc)),
+    }))
+}
+
 pub fn responses_to_anthropic(response: &Value, original: &Value) -> Value {
-    let content = response_output_to_blocks(response);
+    let emit_thinking = thinking_enabled(original);
+    let content = response_output_to_blocks(response, emit_thinking);
     let stop_reason = infer_stop_reason(response, &content);
     let usage = response.get("usage");
 
@@ -362,10 +507,15 @@ pub fn responses_to_anthropic(response: &Value, original: &Value) -> Value {
     })
 }
 
-fn response_output_to_blocks(response: &Value) -> Vec<Value> {
+fn response_output_to_blocks(response: &Value, emit_thinking: bool) -> Vec<Value> {
     let mut blocks = Vec::new();
     if let Some(output) = response.get("output").and_then(|v| v.as_array()) {
         for item in output {
+            if emit_thinking && item.get("type").and_then(|v| v.as_str()) == Some("reasoning") {
+                if let Some(block) = reasoning_item_to_thinking(item) {
+                    blocks.push(block);
+                }
+            }
             if item.get("type").and_then(|v| v.as_str()) == Some("message") {
                 if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
                     for c in content {
@@ -456,12 +606,14 @@ pub struct StreamState {
     pub output_to_block: Vec<(String, usize)>,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    pub reasoning_tokens: i64,
     pub stop_reason: String,
     pub stream_errored: bool,
+    pub emit_thinking: bool,
 }
 
 impl StreamState {
-    pub fn new(message_id: String) -> Self {
+    pub fn new(message_id: String, emit_thinking: bool) -> Self {
         StreamState {
             message_id,
             next_index: 0,
@@ -471,8 +623,10 @@ impl StreamState {
             output_to_block: Vec::new(),
             input_tokens: 0,
             output_tokens: 0,
+            reasoning_tokens: 0,
             stop_reason: "end_turn".to_string(),
             stream_errored: false,
+            emit_thinking,
         }
     }
 }
@@ -583,6 +737,13 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
                 if let Some(o) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
                     state.output_tokens = o;
                 }
+                if let Some(r) = usage
+                    .get("output_tokens_details")
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_i64())
+                {
+                    state.reasoning_tokens = r;
+                }
             }
             let inferred = infer_stop_reason(&response, &[]);
             if !(state.stop_reason == "tool_use" && inferred == "end_turn") {
@@ -655,6 +816,44 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
         }
         "response.output_item.done" => {
             let item = data.get("item");
+            if state.emit_thinking
+                && item.and_then(|i| i.get("type")).and_then(|v| v.as_str()) == Some("reasoning")
+            {
+                if let Some(block) = item.and_then(reasoning_item_to_thinking) {
+                    let index = state.next_index;
+                    state.next_index += 1;
+                    frames.push(encode_sse(
+                        "content_block_start",
+                        &json!({
+                            "type": "content_block_start",
+                            "index": index,
+                            "content_block": { "type": "thinking", "thinking": "", "signature": "" },
+                        }),
+                    ));
+                    if let Some(text) = block.get("thinking").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                        frames.push(encode_sse(
+                            "content_block_delta",
+                            &json!({
+                                "type": "content_block_delta",
+                                "index": index,
+                                "delta": { "type": "thinking_delta", "thinking": text },
+                            }),
+                        ));
+                    }
+                    frames.push(encode_sse(
+                        "content_block_delta",
+                        &json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": { "type": "signature_delta", "signature": block.get("signature").and_then(|v| v.as_str()).unwrap_or("") },
+                        }),
+                    ));
+                    frames.push(encode_sse(
+                        "content_block_stop",
+                        &json!({ "type": "content_block_stop", "index": index }),
+                    ));
+                }
+            }
             if item.and_then(|i| i.get("type")).and_then(|v| v.as_str()) == Some("function_call") {
                 let key = fn_key(data);
                 let item = item.cloned().unwrap_or(Value::Null);
@@ -807,7 +1006,7 @@ mod tests {
             ],
             "tool_choice": { "type": "any" }
         });
-        let payload = anthropic_to_responses(&req, "default").unwrap();
+        let payload = anthropic_to_responses(&req, "default", &ModelMap::default()).unwrap();
 
         assert_eq!(payload["model"], "gpt-5.5");
         assert_eq!(payload["reasoning"]["effort"], "high");
@@ -850,8 +1049,68 @@ mod tests {
     }
 
     #[test]
+    fn maps_claude_models_and_passes_through_gpt() {
+        let map = ModelMap::default();
+        let mk = |model: &str| {
+            let req = json!({ "model": model, "max_tokens": 10, "messages": [{ "role": "user", "content": "hi" }] });
+            anthropic_to_responses(&req, "d", &map).unwrap()["model"].as_str().unwrap().to_string()
+        };
+        assert_eq!(mk("claude-sonnet-4-5"), "gpt-5.5");
+        assert_eq!(mk("claude-opus-4-1"), "gpt-5.5");
+        assert_eq!(mk("claude-3-5-haiku-20241022"), "gpt-5.4-mini");
+        assert_eq!(mk("claude-sonnet-4-5[1m]"), "gpt-5.5");
+        assert_eq!(mk("gpt-5.3-codex"), "gpt-5.3-codex");
+    }
+
+    #[test]
+    fn thinking_block_enables_reasoning() {
+        let req = json!({
+            "model": "gpt-5.5",
+            "max_tokens": 10,
+            "thinking": { "type": "enabled", "budget_tokens": 30000 },
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        let payload = anthropic_to_responses(&req, "d", &ModelMap::default()).unwrap();
+        assert_eq!(payload["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn reasoning_round_trips_through_thinking_block() {
+        let response = json!({
+            "id": "resp_1",
+            "model": "gpt-5.5",
+            "output": [
+                { "type": "reasoning", "id": "rs_1", "encrypted_content": "ENC",
+                  "summary": [{ "type": "summary_text", "text": "thought" }] },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "hi" }] }
+            ],
+            "usage": { "input_tokens": 1, "output_tokens": 1 }
+        });
+        let original = json!({ "model": "claude-sonnet-4-5", "thinking": { "type": "enabled" } });
+        let msg = responses_to_anthropic(&response, &original);
+        assert_eq!(msg["content"][0]["type"], "thinking");
+        assert_eq!(msg["content"][0]["thinking"], "thought");
+        let sig = msg["content"][0]["signature"].as_str().unwrap();
+
+        // Feed the emitted thinking block back; the reasoning item must reappear.
+        let req = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 10,
+            "messages": [{
+                "role": "assistant",
+                "content": [{ "type": "thinking", "thinking": "thought", "signature": sig }]
+            }]
+        });
+        let payload = anthropic_to_responses(&req, "d", &ModelMap::default()).unwrap();
+        let item = &payload["input"][0];
+        assert_eq!(item["type"], "reasoning");
+        assert_eq!(item["id"], "rs_1");
+        assert_eq!(item["encrypted_content"], "ENC");
+    }
+
+    #[test]
     fn streams_text_then_tool_use() {
-        let mut sm = StreamState::new("msg_test".into());
+        let mut sm = StreamState::new("msg_test".into(), false);
         let events = [
             json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "Hi" }),
             json!({ "type": "response.output_text.done", "output_index": 0 }),

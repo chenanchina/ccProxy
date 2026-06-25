@@ -33,6 +33,8 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/status", get(auth_status))
         .route("/auth/login", get(auth_login))
         .route("/auth/callback", get(auth_callback))
+        .route("/auth/device/start", get(auth_device_start))
+        .route("/auth/device/poll", get(auth_device_poll))
         .route("/v1/models", get(models))
         .route("/models", get(models))
         .route("/v1/messages", post(messages))
@@ -130,6 +132,13 @@ fn authorize_client(headers: &HeaderMap, state: &AppState) -> Result<Option<i64>
     }
     if let Some(key) = &presented {
         if let Some(id) = state.db.verify_token(key) {
+            if state.db.token_over_limit(id) {
+                return Err(AppError::new(
+                    429,
+                    "Token quota exhausted",
+                    "rate_limit_error",
+                ));
+            }
             return Ok(Some(id));
         }
     }
@@ -282,6 +291,48 @@ async fn auth_callback(
     }
 }
 
+async fn auth_device_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_local_auth_for_url(&headers, &query, &state.config.proxy_api_key) {
+        return e.into_openai_response();
+    }
+    let Some(auth) = &state.auth else {
+        return AppError::bad_request("Device login is only available when OPENAI_AUTH_MODE=codex")
+            .into_openai_response();
+    };
+    match auth.start_device_login().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn auth_device_poll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_local_auth_for_url(&headers, &query, &state.config.proxy_api_key) {
+        return e.into_openai_response();
+    }
+    let Some(auth) = &state.auth else {
+        return AppError::bad_request("Device login is only available when OPENAI_AUTH_MODE=codex")
+            .into_openai_response();
+    };
+    let (Some(device_auth_id), Some(user_code)) =
+        (query.get("device_auth_id"), query.get("user_code"))
+    else {
+        return AppError::bad_request("device_auth_id and user_code are required")
+            .into_openai_response();
+    };
+    match auth.poll_device_login(device_auth_id, user_code).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
 async fn models(State(state): State<AppState>) -> Response {
     let data = list_models(&state.upstream).await;
     Json(json!({ "object": "list", "data": data })).into_response()
@@ -314,8 +365,13 @@ async fn messages_inner(
     request: Value,
     token_id: Option<i64>,
 ) -> Result<Response, AppError> {
-    let payload = anthropic::anthropic_to_responses(&request, &state.config.default_instructions)?;
+    let payload = anthropic::anthropic_to_responses(
+        &request,
+        &state.config.default_instructions,
+        &state.config.model_map,
+    )?;
     let stream = request.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let emit_thinking = anthropic::thinking_enabled(&request);
     let model = request.get("model").cloned().unwrap_or(Value::Null);
     let model_str = model.as_str().map(|s| s.to_string());
 
@@ -341,7 +397,7 @@ async fn messages_inner(
     let db = state.db.clone();
 
     let sse = async_stream::stream! {
-        let mut sm = anthropic::StreamState::new(message_id.clone());
+        let mut sm = anthropic::StreamState::new(message_id.clone(), emit_thinking);
         yield Ok::<Bytes, std::io::Error>(Bytes::from(anthropic::message_start_frame(&message_id, &model)));
 
         futures_util::pin_mut!(events);
@@ -369,7 +425,7 @@ async fn messages_inner(
                     }
                 }
                 Err(e) => {
-                    yield Ok(Bytes::from(anthropic::error_frame(&e.kind, &e.message)));
+                    yield Ok(Bytes::from(anthropic::error_frame(e.anthropic_error_type(), &e.message)));
                     return;
                 }
             }
@@ -385,7 +441,7 @@ async fn messages_inner(
             model_str.as_deref(),
             sm.input_tokens,
             sm.output_tokens,
-            0,
+            sm.reasoning_tokens,
             true,
             "/v1/messages",
             200,
@@ -418,34 +474,91 @@ async fn responses_inner(
     token_id: Option<i64>,
 ) -> Result<Response, AppError> {
     let model_str = request.get("model").and_then(|v| v.as_str()).map(String::from);
+    let stream_flag = request.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
     let upstream = state.upstream.passthrough(request).await?;
     let status = StatusCode::from_u16(upstream.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    state.db.record_usage(
-        token_id,
-        model_str.as_deref(),
-        0,
-        0,
-        0,
-        false,
-        "/v1/responses",
-        status.as_u16(),
-    );
     let content_type = upstream
         .headers()
         .get(header::CONTENT_TYPE)
         .cloned()
         .unwrap_or_else(|| HeaderValue::from_static("application/json"));
 
+    let db = state.db.clone();
+    let status_code = status.as_u16();
+    // Tee the upstream body through to the client while buffering it (capped) so
+    // we can parse the final usage object and record per-token consumption.
+    const USAGE_BUF_CAP: usize = 8 * 1024 * 1024;
+    let body_stream = async_stream::stream! {
+        let stream = upstream.bytes_stream();
+        futures_util::pin_mut!(stream);
+        let mut buf: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    if !truncated && buf.len() + bytes.len() <= USAGE_BUF_CAP {
+                        buf.extend_from_slice(&bytes);
+                    } else {
+                        truncated = true;
+                    }
+                    yield Ok::<Bytes, std::io::Error>(bytes);
+                }
+                Err(e) => {
+                    yield Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+                    break;
+                }
+            }
+        }
+        let (input, output, reasoning) = extract_usage(&buf);
+        db.record_usage(
+            token_id,
+            model_str.as_deref(),
+            input,
+            output,
+            reasoning,
+            stream_flag,
+            "/v1/responses",
+            status_code,
+        );
+    };
+
     let mut response = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type)
-        .body(Body::from_stream(upstream.bytes_stream()))
+        .body(Body::from_stream(body_stream))
         .unwrap();
     response
         .headers_mut()
         .insert("x-accel-buffering", HeaderValue::from_static("no"));
     Ok(response)
+}
+
+/// Extracts (input, output, reasoning) token counts from a Responses API body,
+/// handling both a single JSON object and a streamed SSE feed.
+fn extract_usage(bytes: &[u8]) -> (i64, i64, i64) {
+    if let Ok(v) = serde_json::from_slice::<Value>(bytes) {
+        let obj = v.get("response").unwrap_or(&v);
+        return usage_from_response(obj);
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let mut last = (0, 0, 0);
+    for line in text.lines() {
+        let Some(data) = line.trim_start().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(data) {
+            let obj = v.get("response").unwrap_or(&v);
+            if obj.get("usage").is_some() {
+                last = usage_from_response(obj);
+            }
+        }
+    }
+    last
 }
 
 // ---- admin / token management ----
@@ -492,7 +605,8 @@ async fn admin_create_token(
         .and_then(|v| v.as_str())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
-    match state.db.create_token(name, note) {
+    let limit = req.get("limit").and_then(|v| v.as_i64());
+    match state.db.create_token(name, note, limit) {
         Ok(token) => (StatusCode::CREATED, Json(token)).into_response(),
         Err(e) => e.into_openai_response(),
     }
@@ -515,7 +629,9 @@ async fn admin_update_token(
     let name = req.get("name").and_then(|v| v.as_str());
     let note = req.get("note").and_then(|v| v.as_str());
     let disabled = req.get("disabled").and_then(|v| v.as_bool());
-    match state.db.update_token(id, name, note, disabled) {
+    // Tri-state: key absent = leave as-is, null = clear quota, number = set quota.
+    let limit = req.get("limit").map(|v| v.as_i64());
+    match state.db.update_token(id, name, note, disabled, limit) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_openai_response(),
     }

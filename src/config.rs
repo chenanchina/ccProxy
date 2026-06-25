@@ -7,6 +7,25 @@ pub enum AuthMode {
     ApiKey,
 }
 
+/// Maps Anthropic-family model names sent by clients (e.g. Claude Code) onto the
+/// upstream gpt models that Codex actually serves.
+#[derive(Clone, Debug)]
+pub struct ModelMap {
+    pub opus: String,
+    pub sonnet: String,
+    pub haiku: String,
+}
+
+impl Default for ModelMap {
+    fn default() -> Self {
+        ModelMap {
+            opus: "gpt-5.5".to_string(),
+            sonnet: "gpt-5.5".to_string(),
+            haiku: "gpt-5.4-mini".to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub host: String,
@@ -25,6 +44,11 @@ pub struct Config {
     pub codex_client_id: String,
     pub codex_oauth_scope: String,
     pub codex_oauth_redirect_host: String,
+    pub codex_device_usercode_url: String,
+    pub codex_device_token_url: String,
+    pub codex_device_verification_url: String,
+    pub codex_device_redirect_uri: String,
+    pub model_map: ModelMap,
     pub default_instructions: String,
     pub upstream_proxy_url: Option<String>,
     pub extra_headers: HashMap<String, String>,
@@ -147,6 +171,31 @@ impl Config {
                 "openid profile email offline_access api.connectors.read api.connectors.invoke",
             ),
             codex_oauth_redirect_host: get_or(env, "CODEX_OAUTH_REDIRECT_HOST", "localhost"),
+            codex_device_usercode_url: get_or(
+                env,
+                "CODEX_DEVICE_USERCODE_URL",
+                "https://auth.openai.com/api/accounts/deviceauth/usercode",
+            ),
+            codex_device_token_url: get_or(
+                env,
+                "CODEX_DEVICE_TOKEN_URL",
+                "https://auth.openai.com/api/accounts/deviceauth/token",
+            ),
+            codex_device_verification_url: get_or(
+                env,
+                "CODEX_DEVICE_VERIFICATION_URL",
+                "https://auth.openai.com/codex/device",
+            ),
+            codex_device_redirect_uri: get_or(
+                env,
+                "CODEX_DEVICE_REDIRECT_URI",
+                "https://auth.openai.com/deviceauth/callback",
+            ),
+            model_map: ModelMap {
+                opus: get_or(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", "gpt-5.5"),
+                sonnet: get_or(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", "gpt-5.5"),
+                haiku: get_or(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL", "gpt-5.4-mini"),
+            },
             default_instructions: get_or(
                 env,
                 "DEFAULT_INSTRUCTIONS",

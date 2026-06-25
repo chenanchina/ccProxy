@@ -3,6 +3,7 @@ use crate::config::{AuthMode, Config};
 use crate::error::AppError;
 use crate::sse::{parse_sse, SseEvent};
 use futures_util::StreamExt;
+use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -12,6 +13,9 @@ pub struct Upstream {
     pub config: Arc<Config>,
     pub http: reqwest::Client,
     pub auth: Option<Arc<CodexAuth>>,
+    /// Stable per-process session id sent to the Codex backend; lets ChatGPT's
+    /// prompt cache stay warm across requests from this proxy instance.
+    session_id: String,
 }
 
 pub struct Prepared {
@@ -19,9 +23,25 @@ pub struct Prepared {
     pub headers: HeaderMap,
 }
 
+fn random_uuid_v4() -> String {
+    let mut b = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
 impl Upstream {
     pub fn new(config: Arc<Config>, http: reqwest::Client, auth: Option<Arc<CodexAuth>>) -> Self {
-        Upstream { config, http, auth }
+        Upstream {
+            config,
+            http,
+            auth,
+            session_id: random_uuid_v4(),
+        }
     }
 
     fn is_codex(&self) -> bool {
@@ -75,6 +95,22 @@ impl Upstream {
                         headers.insert(HeaderName::from_static("chatgpt-account-id"), val);
                     }
                 }
+                // Mimic the real Codex CLI so the ChatGPT backend treats us as a
+                // first-class client (avoids unknown-originator throttling and
+                // keeps prompt caching keyed to a stable session).
+                headers.insert(HeaderName::from_static("originator"), HeaderValue::from_static("codex_cli_rs"));
+                if let Ok(val) = HeaderValue::from_str(&self.session_id) {
+                    headers.insert(HeaderName::from_static("session_id"), val);
+                }
+                if let Ok(val) = HeaderValue::from_str(&self.config.codex_client_version) {
+                    headers.insert(HeaderName::from_static("version"), val);
+                }
+                if let Ok(val) = HeaderValue::from_str(&format!(
+                    "codex_cli_rs/{} (ccproxy)",
+                    self.config.codex_client_version
+                )) {
+                    headers.insert(USER_AGENT, val);
+                }
                 Ok(Prepared {
                     url: format!("{}/responses", self.config.codex_api_base.trim_end_matches('/')),
                     headers,
@@ -87,6 +123,14 @@ impl Upstream {
         if self.is_codex() {
             if let Some(obj) = payload.as_object_mut() {
                 obj.remove("max_output_tokens");
+                // With store:false the only way to carry reasoning across turns is
+                // to ask the backend to return encrypted reasoning content.
+                if obj.contains_key("reasoning") {
+                    obj.insert(
+                        "include".into(),
+                        json!(["reasoning.encrypted_content"]),
+                    );
+                }
             }
         }
         payload

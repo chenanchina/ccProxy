@@ -39,6 +39,24 @@ impl AppError {
         StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
     }
 
+    /// Maps the error onto an Anthropic Messages API error type so clients like
+    /// Claude Code can apply the right handling (retry on overloaded, stop on
+    /// authentication, etc.). Falls back to the internal kind when it is already
+    /// a valid Anthropic type.
+    pub fn anthropic_error_type(&self) -> &str {
+        match self.status {
+            400 => "invalid_request_error",
+            401 => "authentication_error",
+            403 => "permission_error",
+            404 => "not_found_error",
+            413 => "request_too_large",
+            429 => "rate_limit_error",
+            503 | 529 => "overloaded_error",
+            s if s >= 500 => "api_error",
+            _ => &self.kind,
+        }
+    }
+
     /// OpenAI-style error body (used by the Codex/Responses passthrough path).
     pub fn into_openai_response(self) -> Response {
         let body = json!({
@@ -55,7 +73,7 @@ impl AppError {
         let body = json!({
             "type": "error",
             "error": {
-                "type": self.kind,
+                "type": self.anthropic_error_type(),
                 "message": self.message,
             }
         });

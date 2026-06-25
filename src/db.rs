@@ -69,6 +69,9 @@ impl Db {
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|e| e.to_string())?;
         conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        // Migration: add the per-token quota column to databases created before it
+        // existed. Ignore the error raised when the column is already present.
+        let _ = conn.execute("ALTER TABLE tokens ADD COLUMN token_limit INTEGER", []);
         Ok(Db {
             conn: Mutex::new(conn),
         })
@@ -95,6 +98,36 @@ impl Db {
         id
     }
 
+    /// True when the token has a positive quota and its accumulated usage
+    /// (input + output + reasoning tokens) has reached it.
+    pub fn token_over_limit(&self, id: i64) -> bool {
+        let Ok(conn) = self.conn.lock() else {
+            return false;
+        };
+        let limit: Option<i64> = conn
+            .query_row(
+                "SELECT token_limit FROM tokens WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .flatten();
+        let Some(limit) = limit.filter(|n| *n > 0) else {
+            return false;
+        };
+        let used: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(input_tokens + output_tokens + reasoning_tokens), 0)
+                 FROM usage WHERE token_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        used >= limit
+    }
+
     pub fn has_tokens(&self) -> bool {
         let Ok(conn) = self.conn.lock() else {
             return false;
@@ -104,15 +137,21 @@ impl Db {
             .unwrap_or(false)
     }
 
-    pub fn create_token(&self, name: &str, note: Option<&str>) -> Result<Value, AppError> {
+    pub fn create_token(
+        &self,
+        name: &str,
+        note: Option<&str>,
+        token_limit: Option<i64>,
+    ) -> Result<Value, AppError> {
         let conn = self.conn.lock().map_err(|_| {
             AppError::new(500, "Database lock poisoned", "database_error")
         })?;
         let token = generate_token();
         let created_at = now_ms();
+        let token_limit = token_limit.filter(|n| *n > 0);
         conn.execute(
-            "INSERT INTO tokens (token, name, note, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![token, name, note, created_at],
+            "INSERT INTO tokens (token, name, note, created_at, token_limit) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![token, name, note, created_at, token_limit],
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
@@ -124,9 +163,11 @@ impl Db {
             "disabled": false,
             "created_at": created_at,
             "last_used_at": Value::Null,
+            "token_limit": token_limit,
             "input_tokens": 0,
             "output_tokens": 0,
             "reasoning_tokens": 0,
+            "used_tokens": 0,
             "requests": 0,
         }))
     }
@@ -141,7 +182,8 @@ impl Db {
                         COALESCE(SUM(u.input_tokens), 0),
                         COALESCE(SUM(u.output_tokens), 0),
                         COALESCE(SUM(u.reasoning_tokens), 0),
-                        COUNT(u.id)
+                        COUNT(u.id),
+                        t.token_limit
                  FROM tokens t LEFT JOIN usage u ON u.token_id = t.id
                  GROUP BY t.id
                  ORDER BY t.created_at DESC",
@@ -149,6 +191,9 @@ impl Db {
             .map_err(db_err)?;
         let rows = stmt
             .query_map([], |row| {
+                let input = row.get::<_, i64>(7)?;
+                let output = row.get::<_, i64>(8)?;
+                let reasoning = row.get::<_, i64>(9)?;
                 Ok(json!({
                     "id": row.get::<_, i64>(0)?,
                     "token": row.get::<_, String>(1)?,
@@ -157,9 +202,11 @@ impl Db {
                     "disabled": row.get::<_, i64>(4)? != 0,
                     "created_at": row.get::<_, i64>(5)?,
                     "last_used_at": row.get::<_, Option<i64>>(6)?,
-                    "input_tokens": row.get::<_, i64>(7)?,
-                    "output_tokens": row.get::<_, i64>(8)?,
-                    "reasoning_tokens": row.get::<_, i64>(9)?,
+                    "input_tokens": input,
+                    "output_tokens": output,
+                    "reasoning_tokens": reasoning,
+                    "used_tokens": input + output + reasoning,
+                    "token_limit": row.get::<_, Option<i64>>(11)?,
                     "requests": row.get::<_, i64>(10)?,
                 }))
             })
@@ -177,6 +224,7 @@ impl Db {
         name: Option<&str>,
         note: Option<&str>,
         disabled: Option<bool>,
+        token_limit: Option<Option<i64>>,
     ) -> Result<(), AppError> {
         let conn = self.conn.lock().map_err(|_| {
             AppError::new(500, "Database lock poisoned", "database_error")
@@ -193,6 +241,14 @@ impl Db {
             conn.execute(
                 "UPDATE tokens SET disabled = ?1 WHERE id = ?2",
                 params![disabled as i64, id],
+            )
+            .map_err(db_err)?;
+        }
+        if let Some(limit) = token_limit {
+            let limit = limit.filter(|n| *n > 0);
+            conn.execute(
+                "UPDATE tokens SET token_limit = ?1 WHERE id = ?2",
+                params![limit, id],
             )
             .map_err(db_err)?;
         }
