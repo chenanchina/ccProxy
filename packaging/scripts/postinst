@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    # Config and data dirs live outside the package so they survive upgrades.
+    mkdir -p /etc/ccproxy /var/lib/ccproxy
+    chmod 755 /var/lib/ccproxy
+
+    # Seed .env from the shipped template only on first install; never clobber
+    # an existing config on upgrade.
+    if [ ! -f /etc/ccproxy/.env ]; then
+        cp /usr/share/ccproxy/env.example /etc/ccproxy/.env
+        chmod 600 /etc/ccproxy/.env
+        echo "ccProxy: created /etc/ccproxy/.env from template — edit it, then: systemctl restart ccproxy"
+    fi
+
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable ccproxy.service 2>/dev/null || true
+    systemctl restart ccproxy.service 2>/dev/null || true
+fi
+
+exit 0

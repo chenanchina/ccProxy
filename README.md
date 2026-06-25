@@ -134,7 +134,19 @@ open dist/ccProxy.app
 
 App 内置并启动同一个 Rust 代理二进制。改了 `src/dashboard.html` 等被编译进二进制的资源后,需要重新运行此脚本。
 
-### Linux systemd
+### Linux:预编译 .deb(推荐)
+
+打 tag(`git tag v0.1.0 && git push --tags`)后,GitHub Actions 会自动编译并把 `.deb` 和裸二进制传到 [Releases](https://github.com/chenanchina/ccProxy/releases)。Debian/Ubuntu 系直接装,无需在服务器上装 Rust 或编译:
+
+```bash
+sudo dpkg -i ccproxy_*_amd64.deb
+sudo nano /etc/ccproxy/.env       # 填配置(首次安装会从模板生成)
+sudo systemctl restart ccproxy
+```
+
+布局:二进制 `/usr/bin/ccproxy`、配置 `/etc/ccproxy/.env`、数据 `/var/lib/ccproxy/`、服务 `ccproxy.service`。**升级**只需装新版 `.deb`——`.env` 和数据库自动保留;`sudo apt purge ccproxy` 才会连配置数据一起删。
+
+### Linux:从源码用脚本安装
 
 用一键脚本安装 / 更新 / 卸载(自动编译,按 FHS 布局布署并生成 systemd 服务):
 

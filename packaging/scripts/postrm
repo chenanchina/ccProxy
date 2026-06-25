@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+# On purge, remove config and data (tokens db + auth.json). A plain remove keeps them.
+if [ "$1" = "purge" ]; then
+    rm -rf /etc/ccproxy /var/lib/ccproxy
+fi
+
+systemctl daemon-reload 2>/dev/null || true
+
+exit 0

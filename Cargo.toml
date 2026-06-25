@@ -31,3 +31,19 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 opt-level = "z"
 lto = true
 strip = true
+
+[package.metadata.deb]
+maintainer = "Austin <austin82@gmail.com>"
+copyright = "2026 Austin"
+license-file = ["LICENSE", "0"]
+extended-description = "Local proxy that converts Anthropic Messages API requests into OpenAI Responses API calls against the ChatGPT/Codex backend, with token management and usage tracking."
+section = "net"
+priority = "optional"
+depends = "$auto"
+maintainer-scripts = "packaging/scripts"
+assets = [
+    ["target/release/ccproxy", "usr/bin/", "755"],
+    ["packaging/ccproxy.service", "lib/systemd/system/ccproxy.service", "644"],
+    [".env.example", "usr/share/ccproxy/env.example", "644"],
+    ["README.md", "usr/share/doc/ccproxy/README.md", "644"],
+]

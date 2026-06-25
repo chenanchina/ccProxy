@@ -1,0 +1,19 @@
+[Unit]
+Description=ccProxy - OpenAI/Anthropic to Codex Responses proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ccproxy
+WorkingDirectory=/var/lib/ccproxy
+# `-` makes the file optional so the unit still loads before postinst seeds it.
+EnvironmentFile=-/etc/ccproxy/.env
+# auth.json + SQLite db live under HOME (/var/lib/ccproxy/.codex, /.ccproxy).
+Environment=HOME=/var/lib/ccproxy
+Restart=on-failure
+RestartSec=2
+DynamicUser=no
+
+[Install]
+WantedBy=multi-user.target

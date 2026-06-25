@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ]; then
+    systemctl stop ccproxy.service 2>/dev/null || true
+    systemctl disable ccproxy.service 2>/dev/null || true
+fi
+
+exit 0
