@@ -180,6 +180,23 @@
   #login button { width: 100%; padding: 10px; }
   #login-err { text-align: center; margin-top: 12px; min-height: 18px; }
 
+  /* ---- account quota strip ---- */
+  .acct { display: flex; flex-wrap: wrap; gap: 22px; align-items: center; padding: 13px 18px;
+    margin-bottom: 18px; background: var(--surface); border: 1px solid var(--bd);
+    border-radius: var(--radius); box-shadow: var(--shadow); }
+  .acct-title { font-size: 12px; font-weight: 600; color: var(--mut); display: flex; align-items: center; gap: 7px; }
+  .acct-title svg { width: 15px; height: 15px; opacity: .7; }
+  .acct-item { min-width: 200px; flex: 1; }
+  .acct-meta { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
+  .acct-meta .lbl { color: var(--mut); }
+  .acct-meta .val { font-variant-numeric: tabular-nums; font-weight: 550; }
+  .acct-bar { height: 8px; background: var(--surface-2); border-radius: 5px; overflow: hidden; }
+  .acct-fill { height: 100%; background: var(--acc); transition: width .4s ease; }
+  .acct-fill.warn { background: #d97706; }
+  .acct-fill.hot { background: var(--off); }
+  .acct-time { font-size: 11px; color: var(--mut-2); white-space: nowrap; }
+  .acct-raw { font-size: 12px; color: var(--mut); }
+
   /* ---- usage charts ---- */
   .chart-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
     gap: 10px; margin-bottom: 16px; }
@@ -241,6 +258,8 @@
     </div>
 
     <div id="err"></div>
+
+    <div id="account" class="acct" style="display:none"></div>
 
     <div class="tabs">
       <button data-tab="tokens" class="active">Token</button>
@@ -347,6 +366,7 @@ const ICON = {
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg>',
   in: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg>',
   out: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>',
+  gauge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>',
 };
 
 function showErr(msg) { errEl.textContent = msg || ""; }
@@ -466,11 +486,67 @@ function renderStats(tokens) {
     </div>`).join("");
 }
 
+function fmtDur(s) {
+  if (s == null || isNaN(s)) return "";
+  if (s < 60) return `${s}秒`;
+  if (s < 3600) return `${Math.round(s / 60)}分钟`;
+  if (s < 86400) return `${Math.round(s / 3600)}小时`;
+  return `${Math.round(s / 86400)}天`;
+}
+function winLabel(min, kind) {
+  const m = parseInt(min);
+  if (!isNaN(m)) {
+    if (m >= 1440) return `${Math.round(m / 1440)} 天窗口`;
+    if (m >= 60) return `${Math.round(m / 60)} 小时窗口`;
+    return `${m} 分钟窗口`;
+  }
+  return kind === "primary" ? "短期窗口" : "长期窗口";
+}
+function renderAccount(data) {
+  const el = document.getElementById("account");
+  const h = (data && data.headers) || {};
+  const keys = Object.keys(h);
+  if (!keys.length) { el.style.display = "none"; return; }
+
+  const groups = [];
+  for (const kind of ["primary", "secondary"]) {
+    const pct = h[`x-codex-${kind}-used-percent`];
+    if (pct == null) continue;
+    groups.push({
+      label: winLabel(h[`x-codex-${kind}-window-minutes`], kind),
+      pct: parseFloat(pct),
+      reset: h[`x-codex-${kind}-reset-after-seconds`] != null ? parseInt(h[`x-codex-${kind}-reset-after-seconds`]) : null,
+    });
+  }
+
+  let inner = `<div class="acct-title">${ICON.gauge}账号额度</div>`;
+  if (groups.length) {
+    inner += groups.map(g => {
+      const pct = Math.max(0, Math.min(100, g.pct || 0));
+      const cls = pct >= 90 ? "hot" : pct >= 70 ? "warn" : "";
+      const reset = g.reset != null ? ` · ${fmtDur(g.reset)}后重置` : "";
+      return `<div class="acct-item">
+        <div class="acct-meta"><span class="lbl">${g.label}</span><span class="val">${pct.toFixed(0)}%${reset}</span></div>
+        <div class="acct-bar"><div class="acct-fill ${cls}" style="width:${pct}%"></div></div>
+      </div>`;
+    }).join("");
+  } else {
+    inner += `<div class="acct-raw">${keys.map(k => `${esc(k)}: ${esc(String(h[k]))}`).join(" · ")}</div>`;
+  }
+  if (data.captured_at) inner += `<div class="acct-time">更新于 ${fmtTs(data.captured_at)}</div>`;
+  el.innerHTML = inner;
+  el.style.display = "";
+}
+async function loadAccount() {
+  try { renderAccount(await api("GET", "/admin/api/account")); } catch {}
+}
+
 async function loadTokens() {
   showErr("");
   try {
     const tokens = await api("GET", "/admin/api/tokens");
     renderStats(tokens);
+    loadAccount();
     const body = document.getElementById("tokens-body");
     const filter = document.getElementById("usage-filter");
     filter.innerHTML = '<option value="">全部 token</option>';

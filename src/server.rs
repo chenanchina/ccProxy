@@ -47,6 +47,7 @@ pub fn router(state: AppState) -> Router {
             patch(admin_update_token).delete(admin_delete_token),
         )
         .route("/admin/api/usage", get(admin_usage))
+        .route("/admin/api/account", get(admin_account))
         .fallback(not_found)
         .layer(middleware::from_fn(cors))
         .with_state(state)
@@ -676,6 +677,21 @@ async fn admin_usage(
         Ok(rows) => Json(rows).into_response(),
         Err(e) => e.into_openai_response(),
     }
+}
+
+async fn admin_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    let snapshot = state
+        .upstream
+        .account_snapshot()
+        .unwrap_or_else(|| json!({ "captured_at": null, "headers": {} }));
+    Json(snapshot).into_response()
 }
 
 // ---- helpers ----

@@ -5,8 +5,8 @@ use crate::sse::{parse_sse, SseEvent};
 use futures_util::StreamExt;
 use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use serde_json::{json, Value};
-use std::sync::Arc;
+use serde_json::{json, Map, Value};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub struct Upstream {
@@ -16,6 +16,16 @@ pub struct Upstream {
     /// Stable per-process session id sent to the Codex backend; lets ChatGPT's
     /// prompt cache stay warm across requests from this proxy instance.
     session_id: String,
+    /// Latest Codex account rate-limit snapshot, captured from upstream response
+    /// headers on each request (admin dashboard reads it).
+    account: Mutex<Option<Value>>,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub struct Prepared {
@@ -41,7 +51,33 @@ impl Upstream {
             http,
             auth,
             session_id: random_uuid_v4(),
+            account: Mutex::new(None),
         }
+    }
+
+    /// Captures Codex rate-limit / usage headers from an upstream response into
+    /// the cached account snapshot. No-op when none are present (e.g. api-key mode).
+    fn record_account(&self, headers: &HeaderMap) {
+        let mut map = Map::new();
+        for (name, value) in headers.iter() {
+            let n = name.as_str().to_ascii_lowercase();
+            if n.starts_with("x-codex") || n.contains("ratelimit") || n.contains("rate-limit") {
+                if let Ok(v) = value.to_str() {
+                    map.insert(n, json!(v));
+                }
+            }
+        }
+        if map.is_empty() {
+            return;
+        }
+        let snapshot = json!({ "captured_at": now_ms(), "headers": map });
+        if let Ok(mut guard) = self.account.lock() {
+            *guard = Some(snapshot);
+        }
+    }
+
+    pub fn account_snapshot(&self) -> Option<Value> {
+        self.account.lock().ok().and_then(|g| g.clone())
     }
 
     fn is_codex(&self) -> bool {
@@ -153,6 +189,7 @@ impl Upstream {
             .send()
             .await?;
 
+        self.record_account(resp.headers());
         if !resp.status().is_success() {
             return Err(upstream_error(resp).await);
         }
@@ -184,6 +221,7 @@ impl Upstream {
             .send()
             .await?;
 
+        self.record_account(resp.headers());
         if !resp.status().is_success() {
             return Err(upstream_error(resp).await);
         }
@@ -209,6 +247,7 @@ impl Upstream {
             .send()
             .await?;
 
+        self.record_account(resp.headers());
         Ok(resp)
     }
 }
