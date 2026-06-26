@@ -456,15 +456,19 @@ function showApp() {
 }
 
 const REPO = "chenanchina/ccProxy";
+let CURRENT_VERSION = "";
 
 async function loadVersion() {
   try {
     const h = await (await fetch("/health")).json();
     if (h.version) {
+      CURRENT_VERSION = h.version;
       const el = document.getElementById("version");
       el.textContent = "v" + h.version;
       el.style.display = "";
-      checkUpdate(h.version);
+      el.style.cursor = "pointer";
+      el.title = "点击检查更新";
+      checkUpdate(h.version, false);
     }
   } catch {}
 }
@@ -478,25 +482,31 @@ function cmpVer(a, b) {
   return 0;
 }
 
-async function checkUpdate(current) {
+async function checkUpdate(current, manual) {
+  const bar = document.getElementById("update-bar");
   try {
     const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
-    if (!r.ok) return;
+    if (!r.ok) { if (manual) toast("检查失败: GitHub 返回 " + r.status); return; }
     const rel = await r.json();
     const latest = (rel.tag_name || "").replace(/^v/, "");
-    if (!latest || cmpVer(latest, current) <= 0) return;
+    if (!latest) { if (manual) toast("检查失败: 无法解析版本"); return; }
+    if (cmpVer(latest, current) <= 0) {
+      bar.style.display = "none";
+      if (manual) toast(`已是最新版 v${current}`);
+      return;
+    }
     const deb = (rel.assets || []).find(a => a.name.endsWith("_amd64.deb"));
     const cmd = deb
       ? `curl -L -o /tmp/ccproxy.deb ${deb.browser_download_url} && sudo dpkg -i /tmp/ccproxy.deb`
       : "";
-    const el = document.getElementById("update-bar");
-    el.innerHTML = `<span class="up-tag">发现新版本 v${esc(latest)}</span>` +
+    bar.innerHTML = `<span class="up-tag">发现新版本 v${esc(latest)}</span>` +
       (cmd ? `<code>${esc(cmd)}</code><button class="sm" id="up-copy">复制升级命令</button>` :
         `<a href="${esc(rel.html_url || "")}" target="_blank">前往 Releases</a>`);
-    el.style.display = "";
+    bar.style.display = "";
     const copyBtn = document.getElementById("up-copy");
     if (copyBtn) copyBtn.onclick = async () => { toast((await copyText(cmd)) ? "升级命令已复制" : "复制失败"); };
-  } catch {}
+    if (manual) toast(`发现新版本 v${latest}`);
+  } catch { if (manual) toast("检查失败: 无法连接 GitHub"); }
 }
 function logout() {
   KEY = "";
@@ -517,6 +527,7 @@ async function tryLogin(pwd) {
 document.getElementById("login-btn").addEventListener("click", doLogin);
 document.getElementById("login-pwd").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 document.getElementById("logout-btn").addEventListener("click", logout);
+document.getElementById("version").addEventListener("click", () => { if (CURRENT_VERSION) checkUpdate(CURRENT_VERSION, true); });
 
 async function doLogin() {
   const errBox = document.getElementById("login-err");
