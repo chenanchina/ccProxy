@@ -210,6 +210,7 @@ async fn health(State(state): State<AppState>) -> Response {
     };
     Json(json!({
         "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
         "auth_mode": if state.config.auth_mode == AuthMode::Codex { "codex" } else { "api-key" },
         "upstream": upstream,
         "upstream_proxy": state.config.upstream_proxy_url,

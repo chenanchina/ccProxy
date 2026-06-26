@@ -254,7 +254,10 @@
           <div class="sub">为不同的人分发独立 token，查看各自的请求与消耗</div>
         </div>
       </div>
-      <button class="ghost" id="logout-btn">退出登录</button>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="version" class="badge" style="display:none"></span>
+        <button class="ghost" id="logout-btn">退出登录</button>
+      </div>
     </div>
 
     <div id="err"></div>
@@ -437,6 +440,18 @@ async function api(method, path, body) {
 function showApp() {
   document.getElementById("login").style.display = "none";
   document.getElementById("app").style.display = "";
+  loadVersion();
+}
+
+async function loadVersion() {
+  try {
+    const h = await (await fetch("/health")).json();
+    if (h.version) {
+      const el = document.getElementById("version");
+      el.textContent = "v" + h.version;
+      el.style.display = "";
+    }
+  } catch {}
 }
 function logout() {
   KEY = "";
