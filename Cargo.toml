@@ -1,6 +1,6 @@
 [package]
 name = "ccproxy"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Local OpenAI/Anthropic to Codex Responses proxy with ChatGPT OAuth and upstream HTTP proxy support."
 license = "MIT"

@@ -182,6 +182,16 @@ fn require_admin(
     }
 }
 
+fn log_trunc(tag: &str, v: &Value) {
+    let s = v.to_string();
+    let max = 4000;
+    if s.len() > max {
+        eprintln!("{tag} ({} bytes) {}…", s.len(), &s[..max]);
+    } else {
+        eprintln!("{tag} {s}");
+    }
+}
+
 fn usage_from_response(response: &Value) -> (i64, i64, i64) {
     let u = response.get("usage");
     let input = u
@@ -392,9 +402,16 @@ async fn messages_inner(
     let emit_thinking = anthropic::thinking_enabled(&request);
     let model = request.get("model").cloned().unwrap_or(Value::Null);
     let model_str = model.as_str().map(|s| s.to_string());
+    let log_up = state.config.log_upstream;
+    if log_up {
+        log_trunc("[ccproxy→codex payload]", &payload);
+    }
 
     if !stream {
         let response = state.upstream.create_response(payload).await?;
+        if log_up {
+            log_trunc("[codex→ccproxy response]", &response);
+        }
         let (input, output, reasoning) = usage_from_response(&response);
         state.db.record_usage(
             token_id,
@@ -435,6 +452,9 @@ async fn messages_inner(
             let Some(item) = next else { break };
             match item {
                 Ok(event) => {
+                    if log_up {
+                        log_trunc("[codex→ccproxy event]", &event.data);
+                    }
                     for frame in anthropic::map_stream_event(&event, &mut sm) {
                         yield Ok(Bytes::from(frame));
                     }
