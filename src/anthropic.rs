@@ -186,6 +186,24 @@ fn messages_to_input(messages: &[Value]) -> Vec<Value> {
     messages.iter().flat_map(message_to_input_items).collect()
 }
 
+/// Converts an Anthropic image block's source into an image URL the Responses
+/// API accepts (a `data:` URL for base64 sources, or the URL as-is).
+fn image_to_url(block: &Value) -> Option<String> {
+    let source = block.get("source")?;
+    match source.get("type").and_then(|v| v.as_str()) {
+        Some("base64") => {
+            let media = source
+                .get("media_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("image/png");
+            let data = source.get("data").and_then(|v| v.as_str())?;
+            Some(format!("data:{media};base64,{data}"))
+        }
+        Some("url") => source.get("url").and_then(|v| v.as_str()).map(String::from),
+        _ => None,
+    }
+}
+
 fn message_to_input_items(message: &Value) -> Vec<Value> {
     let role = if message.get("role").and_then(|v| v.as_str()) == Some("assistant") {
         "assistant"
@@ -199,18 +217,14 @@ fn message_to_input_items(message: &Value) -> Vec<Value> {
     };
 
     let mut items: Vec<Value> = Vec::new();
-    let mut text_parts: Vec<String> = Vec::new();
+    let mut parts: Vec<Value> = Vec::new();
 
-    let flush = |items: &mut Vec<Value>, text_parts: &mut Vec<String>| {
-        if text_parts.is_empty() {
+    let text_part = |t: String| json!({ "type": text_type, "text": t });
+    let flush = |items: &mut Vec<Value>, parts: &mut Vec<Value>| {
+        if parts.is_empty() {
             return;
         }
-        let content: Vec<Value> = text_parts
-            .iter()
-            .map(|t| json!({ "type": text_type, "text": t }))
-            .collect();
-        items.push(json!({ "role": role, "content": content }));
-        text_parts.clear();
+        items.push(json!({ "role": role, "content": std::mem::take(parts) }));
     };
 
     let content = message.get("content");
@@ -218,8 +232,10 @@ fn message_to_input_items(message: &Value) -> Vec<Value> {
 
     let Some(blocks) = blocks else {
         // string or other scalar content
-        text_parts = content_to_text_parts(content.unwrap_or(&Value::Null));
-        flush(&mut items, &mut text_parts);
+        for t in content_to_text_parts(content.unwrap_or(&Value::Null)) {
+            parts.push(text_part(t));
+        }
+        flush(&mut items, &mut parts);
         if items.is_empty() {
             return vec![json!({ "role": role, "content": [{ "type": text_type, "text": "" }] })];
         }
@@ -228,21 +244,37 @@ fn message_to_input_items(message: &Value) -> Vec<Value> {
 
     for block in blocks {
         let btype = block.get("type").and_then(|v| v.as_str());
+
+        // Forward images as real input_image parts (user turns only); the
+        // Responses API has no image content type for assistant turns.
+        if btype == Some("image") && role == "user" {
+            if let Some(url) = image_to_url(block) {
+                parts.push(json!({ "type": "input_image", "image_url": url }));
+            } else {
+                parts.push(text_part(
+                    "[unsupported image omitted by local proxy]".to_string(),
+                ));
+            }
+            continue;
+        }
+
         if block.is_string() || btype == Some("text") || btype == Some("image") {
-            text_parts.extend(content_to_text_parts(block));
+            for t in content_to_text_parts(block) {
+                parts.push(text_part(t));
+            }
             continue;
         }
 
         if role == "assistant" && matches!(btype, Some("thinking") | Some("redacted_thinking")) {
             if let Some(item) = thinking_block_to_reasoning(block) {
-                flush(&mut items, &mut text_parts);
+                flush(&mut items, &mut parts);
                 items.push(item);
             }
             continue;
         }
 
         if role == "assistant" && btype == Some("tool_use") {
-            flush(&mut items, &mut text_parts);
+            flush(&mut items, &mut parts);
             let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
             items.push(json!({
                 "type": "function_call",
@@ -254,7 +286,7 @@ fn message_to_input_items(message: &Value) -> Vec<Value> {
         }
 
         if role == "user" && btype == Some("tool_result") {
-            flush(&mut items, &mut text_parts);
+            flush(&mut items, &mut parts);
             items.push(json!({
                 "type": "function_call_output",
                 "call_id": block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -263,10 +295,12 @@ fn message_to_input_items(message: &Value) -> Vec<Value> {
             continue;
         }
 
-        text_parts.extend(content_to_text_parts(block));
+        for t in content_to_text_parts(block) {
+            parts.push(text_part(t));
+        }
     }
 
-    flush(&mut items, &mut text_parts);
+    flush(&mut items, &mut parts);
 
     if items.is_empty() {
         return vec![json!({ "role": role, "content": [{ "type": text_type, "text": "" }] })];
@@ -1099,6 +1133,26 @@ mod tests {
         assert_eq!(msg["content"][1]["id"], "call_9");
         assert_eq!(msg["content"][1]["input"]["a"], 1);
         assert_eq!(msg["usage"]["input_tokens"], 7);
+    }
+
+    #[test]
+    fn forwards_image_blocks_as_input_image() {
+        let req = json!({
+            "model": "gpt-5.5",
+            "max_tokens": 10,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "what is this" },
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } }
+                ]
+            }]
+        });
+        let payload = anthropic_to_responses(&req, "d", &ModelMap::default()).unwrap();
+        let content = payload["input"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(content[1]["image_url"], "data:image/png;base64,AAAA");
     }
 
     #[test]

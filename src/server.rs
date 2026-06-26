@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::models::list_models;
 use crate::upstream::Upstream;
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -54,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/api/account", get(admin_account))
         .fallback(not_found)
         .layer(middleware::from_fn(cors))
+        .layer(DefaultBodyLimit::max(state.config.max_body_bytes))
         .with_state(state)
 }
 
