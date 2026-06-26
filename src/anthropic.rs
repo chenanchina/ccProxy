@@ -540,6 +540,35 @@ fn reasoning_item_to_thinking(item: &Value) -> Option<Value> {
     }))
 }
 
+/// Some models, under Anthropic-oriented prompts, emit their reply as a JSON
+/// content-block string like `{"text":"…","type":"text"}` instead of plain text.
+/// When the text is exactly such a wrapper, return the inner text; else None.
+fn unwrap_content_block_text(s: &str) -> Option<String> {
+    let trimmed = s.trim_start();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let first = serde_json::Deserializer::from_str(trimmed)
+        .into_iter::<Value>()
+        .next()?
+        .ok()?;
+    let obj = first.as_object()?;
+    let text = obj.get("text")?.as_str()?;
+    if obj.keys().all(|k| k == "text" || k == "type") {
+        Some(text.to_string())
+    } else {
+        None
+    }
+}
+
+/// Looks like the start of a content-block JSON wrapper (used to decide whether a
+/// streamed text block needs buffering before it can be unwrapped).
+fn looks_like_block_wrapper_start(s: &str) -> bool {
+    let t = s.trim_start();
+    let t = t.strip_prefix('{').map(|r| r.trim_start()).unwrap_or("");
+    t.starts_with("\"text\"") || t.starts_with("\"type\"")
+}
+
 pub fn responses_to_anthropic(response: &Value, original: &Value) -> Value {
     let emit_thinking = thinking_enabled(original);
     let content = response_output_to_blocks(response, emit_thinking);
@@ -577,10 +606,10 @@ fn response_output_to_blocks(response: &Value, emit_thinking: bool) -> Vec<Value
                             c.get("type").and_then(|v| v.as_str()),
                             Some("output_text") | Some("text")
                         ) {
-                            blocks.push(json!({
-                                "type": "text",
-                                "text": c.get("text").and_then(|v| v.as_str()).unwrap_or(""),
-                            }));
+                            let raw = c.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let text =
+                                unwrap_content_block_text(raw).unwrap_or_else(|| raw.to_string());
+                            blocks.push(json!({ "type": "text", "text": text }));
                         }
                     }
                 }
@@ -670,6 +699,9 @@ pub struct StreamState {
     pub stop_reason: String,
     pub stream_errored: bool,
     pub emit_thinking: bool,
+    // Per text block: accumulated text and mode (0=undecided, 1=passthrough, 2=buffering).
+    pub text_buf: HashMap<String, String>,
+    pub text_mode: HashMap<String, u8>,
 }
 
 impl StreamState {
@@ -687,8 +719,21 @@ impl StreamState {
             stop_reason: "end_turn".to_string(),
             stream_errored: false,
             emit_thinking,
+            text_buf: HashMap::new(),
+            text_mode: HashMap::new(),
         }
     }
+}
+
+fn text_delta_frame(index: usize, text: &str) -> String {
+    encode_sse(
+        "content_block_delta",
+        &json!({
+            "type": "content_block_delta",
+            "index": index,
+            "delta": { "type": "text_delta", "text": text },
+        }),
+    )
 }
 
 fn num_or_str(data: &Value, key: &str) -> Option<String> {
@@ -773,6 +818,22 @@ fn stop_block(state: &mut StreamState, key: &str) -> Option<String> {
     ))
 }
 
+/// Emits any text that was buffered for unwrapping (suspected content-block JSON),
+/// unwrapping it first. Returns None when the block streamed through as plain text.
+fn flush_text_buffer(state: &mut StreamState, key: &str) -> Option<String> {
+    if *state.text_mode.get(key).unwrap_or(&0) == 1 {
+        return None;
+    }
+    let index = *state.text_blocks.get(key)?;
+    let buf = state.text_buf.get_mut(key)?;
+    if buf.is_empty() {
+        return None;
+    }
+    let raw = std::mem::take(buf);
+    let out = unwrap_content_block_text(&raw).unwrap_or(raw);
+    Some(text_delta_frame(index, &out))
+}
+
 pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String> {
     if event.done {
         return Vec::new();
@@ -834,15 +895,39 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
         "response.output_text.delta" => {
             let key = text_key(data);
             push_opt(&mut frames, start_text_block(state, &key));
+            let delta = data
+                .get("delta")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if let Some(&index) = state.text_blocks.get(&key) {
-                frames.push(encode_sse(
-                    "content_block_delta",
-                    &json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": { "type": "text_delta", "text": data.get("delta").and_then(|v| v.as_str()).unwrap_or("") },
-                    }),
-                ));
+                let mode = *state.text_mode.get(&key).unwrap_or(&0);
+                if mode == 1 {
+                    // Confirmed plain text: stream the delta through unchanged.
+                    frames.push(text_delta_frame(index, &delta));
+                } else {
+                    let buf = state.text_buf.entry(key.clone()).or_default();
+                    buf.push_str(&delta);
+                    if mode == 0 {
+                        let trimmed = buf.trim_start();
+                        if trimmed.is_empty() {
+                            // wait for more
+                        } else if !trimmed.starts_with('{') {
+                            let flush = std::mem::take(buf);
+                            state.text_mode.insert(key.clone(), 1);
+                            frames.push(text_delta_frame(index, &flush));
+                        } else if buf.len() >= 16 {
+                            if looks_like_block_wrapper_start(buf) {
+                                state.text_mode.insert(key.clone(), 2);
+                            } else {
+                                let flush = std::mem::take(buf);
+                                state.text_mode.insert(key.clone(), 1);
+                                frames.push(text_delta_frame(index, &flush));
+                            }
+                        }
+                    }
+                    // mode 2 (buffering): accumulate silently until done.
+                }
             }
         }
         "response.function_call_arguments.delta" => {
@@ -959,7 +1044,10 @@ pub fn map_stream_event(event: &SseEvent, state: &mut StreamState) -> Vec<String
         }
         "response.output_text.done" => {
             let key = text_key(data);
+            push_opt(&mut frames, flush_text_buffer(state, &key));
             push_opt(&mut frames, stop_block(state, &key));
+            state.text_buf.remove(&key);
+            state.text_mode.remove(&key);
         }
         "error" => {
             frames.push(encode_sse(
@@ -1010,7 +1098,9 @@ pub fn message_start_frame(message_id: &str, model: &Value) -> String {
 pub fn finish_open_blocks(state: &mut StreamState) -> Vec<String> {
     let mut frames = Vec::new();
     let remaining: Vec<(String, usize)> = state.output_to_block.drain(..).collect();
-    for (_, index) in remaining {
+    for (key, index) in remaining {
+        // Flush any still-buffered text (stream ended before output_text.done).
+        push_opt(&mut frames, flush_text_buffer(state, &key));
         frames.push(encode_sse(
             "content_block_stop",
             &json!({ "type": "content_block_stop", "index": index }),
@@ -1133,6 +1223,59 @@ mod tests {
         assert_eq!(msg["content"][1]["id"], "call_9");
         assert_eq!(msg["content"][1]["input"]["a"], 1);
         assert_eq!(msg["usage"]["input_tokens"], 7);
+    }
+
+    #[test]
+    fn unwraps_content_block_json_in_non_stream() {
+        let response = json!({
+            "id": "r1", "model": "gpt-5.5",
+            "output": [{ "type": "message", "role": "assistant",
+                "content": [{ "type": "output_text", "text": "{\"text\":\"# 标题\\n正文\",\"type\":\"text\"}" }] }],
+            "usage": { "input_tokens": 1, "output_tokens": 1 }
+        });
+        let msg = responses_to_anthropic(&response, &json!({}));
+        assert_eq!(msg["content"][0]["type"], "text");
+        assert_eq!(msg["content"][0]["text"], "# 标题\n正文");
+    }
+
+    #[test]
+    fn streaming_unwraps_buffered_json_text() {
+        let mut sm = StreamState::new("m".into(), false);
+        // The model streams a content-block JSON wrapper one char at a time.
+        let payload = "{\"text\":\"hello world\",\"type\":\"text\"}";
+        let mut all = String::new();
+        for ch in payload.chars() {
+            let ev = SseEvent {
+                event: "message".into(),
+                data: json!({ "type": "response.output_text.delta", "output_index": 0, "delta": ch.to_string() }),
+                done: false,
+            };
+            for f in map_stream_event(&ev, &mut sm) {
+                all.push_str(&f);
+            }
+        }
+        let done = SseEvent {
+            event: "message".into(),
+            data: json!({ "type": "response.output_text.done", "output_index": 0 }),
+            done: false,
+        };
+        for f in map_stream_event(&done, &mut sm) {
+            all.push_str(&f);
+        }
+        assert!(all.contains("hello world"), "got: {all}");
+        assert!(!all.contains("\\\"text\\\""), "raw JSON leaked: {all}");
+    }
+
+    #[test]
+    fn streaming_plain_text_passes_through() {
+        let mut sm = StreamState::new("m".into(), false);
+        let ev = SseEvent {
+            event: "message".into(),
+            data: json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "正常文本" }),
+            done: false,
+        };
+        let frames = map_stream_event(&ev, &mut sm).join("");
+        assert!(frames.contains("正常文本"));
     }
 
     #[test]

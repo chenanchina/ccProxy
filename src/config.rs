@@ -215,7 +215,10 @@ impl Config {
             sse_max_frame_bytes: parse_u64(env, "SSE_MAX_FRAME_BYTES", 1024 * 1024) as usize,
             model_list_timeout_ms: parse_u64(env, "MODEL_LIST_TIMEOUT_MS", 10_000),
             codex_auth_timeout_ms: parse_u64(env, "CODEX_AUTH_TIMEOUT_MS", 30_000),
-            log_upstream: matches!(get(env, "LOG_UPSTREAM").as_deref(), Some("1") | Some("true")),
+            log_upstream: matches!(
+                get(env, "LOG_UPSTREAM").as_deref(),
+                Some("1") | Some("true")
+            ),
         }
     }
 }
