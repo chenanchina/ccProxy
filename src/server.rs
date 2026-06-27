@@ -423,30 +423,61 @@ async fn usage_report(state: &AppState, token_id: Option<i64>) -> String {
 }
 
 /// A synthetic Responses API reply (output + optional SSE) carrying the text.
+/// The streaming form mirrors the real event sequence Codex CLI expects.
 fn responses_synthetic(model: &Value, text: &str, stream: bool) -> Response {
-    let response = json!({
-        "id": format!("resp_{}", &uuid_like()),
-        "object": "response",
-        "model": model,
-        "status": "completed",
-        "output": [{
-            "type": "message", "role": "assistant",
-            "content": [{ "type": "output_text", "text": text }],
-        }],
-        "usage": { "input_tokens": 0, "output_tokens": 0 },
+    let resp_id = format!("resp_{}", uuid_like());
+    let msg_id = format!("msg_{}", uuid_like());
+    let message_item = json!({
+        "id": msg_id, "type": "message", "status": "completed", "role": "assistant",
+        "content": [{ "type": "output_text", "annotations": [], "text": text }],
+    });
+    let final_response = json!({
+        "id": resp_id, "object": "response", "status": "completed", "model": model,
+        "output": [message_item.clone()],
+        "usage": { "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 },
     });
     if !stream {
-        return Json(response).into_response();
+        return Json(final_response).into_response();
     }
     let frames = vec![
-        sse_data(
-            &json!({ "type": "response.created", "response": { "id": response["id"], "model": model } }),
+        sse_event(
+            "response.created",
+            &json!({ "type": "response.created", "response": {
+                "id": resp_id, "object": "response", "status": "in_progress", "model": model, "output": [] } }),
         ),
-        sse_data(
-            &json!({ "type": "response.output_text.delta", "output_index": 0, "delta": text }),
+        sse_event(
+            "response.output_item.added",
+            &json!({ "type": "response.output_item.added", "output_index": 0,
+                "item": { "id": msg_id, "type": "message", "status": "in_progress", "role": "assistant", "content": [] } }),
         ),
-        sse_data(&json!({ "type": "response.output_text.done", "output_index": 0, "text": text })),
-        sse_data(&json!({ "type": "response.completed", "response": response })),
+        sse_event(
+            "response.content_part.added",
+            &json!({ "type": "response.content_part.added", "output_index": 0, "content_index": 0,
+                "item_id": msg_id, "part": { "type": "output_text", "annotations": [], "text": "" } }),
+        ),
+        sse_event(
+            "response.output_text.delta",
+            &json!({ "type": "response.output_text.delta", "output_index": 0, "content_index": 0,
+                "item_id": msg_id, "delta": text }),
+        ),
+        sse_event(
+            "response.output_text.done",
+            &json!({ "type": "response.output_text.done", "output_index": 0, "content_index": 0,
+                "item_id": msg_id, "text": text }),
+        ),
+        sse_event(
+            "response.content_part.done",
+            &json!({ "type": "response.content_part.done", "output_index": 0, "content_index": 0,
+                "item_id": msg_id, "part": { "type": "output_text", "annotations": [], "text": text } }),
+        ),
+        sse_event(
+            "response.output_item.done",
+            &json!({ "type": "response.output_item.done", "output_index": 0, "item": message_item }),
+        ),
+        sse_event(
+            "response.completed",
+            &json!({ "type": "response.completed", "response": final_response }),
+        ),
     ];
     let body = async_stream::stream! {
         for f in frames { yield Ok::<Bytes, std::io::Error>(Bytes::from(f)); }
@@ -454,8 +485,8 @@ fn responses_synthetic(model: &Value, text: &str, stream: bool) -> Response {
     sse_response(Body::from_stream(body))
 }
 
-fn sse_data(v: &Value) -> String {
-    format!("data: {v}\n\n")
+fn sse_event(event: &str, data: &Value) -> String {
+    format!("event: {event}\ndata: {data}\n\n")
 }
 
 fn uuid_like() -> String {
