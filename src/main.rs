@@ -7,6 +7,7 @@ mod models;
 mod server;
 mod sse;
 mod upstream;
+mod usage;
 
 use std::sync::Arc;
 use std::time::Duration;

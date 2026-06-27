@@ -1076,6 +1076,46 @@ fn push_opt(frames: &mut Vec<String>, frame: Option<String>) {
     }
 }
 
+/// A complete non-streaming assistant message carrying the given text. Used to
+/// answer proxy-handled commands (e.g. usage) without calling the upstream.
+pub fn synthetic_message(model: &Value, text: &str) -> Value {
+    json!({
+        "id": new_message_id(),
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{ "type": "text", "text": text }],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": { "input_tokens": 0, "output_tokens": 0 },
+    })
+}
+
+/// The same, as a full set of Anthropic SSE frames for the streaming path.
+pub fn synthetic_stream(model: &Value, text: &str) -> Vec<String> {
+    let id = new_message_id();
+    vec![
+        message_start_frame(&id, model),
+        encode_sse(
+            "content_block_start",
+            &json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        ),
+        encode_sse(
+            "content_block_delta",
+            &json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": text } }),
+        ),
+        encode_sse(
+            "content_block_stop",
+            &json!({ "type": "content_block_stop", "index": 0 }),
+        ),
+        encode_sse(
+            "message_delta",
+            &json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn", "stop_sequence": null }, "usage": { "output_tokens": 0 } }),
+        ),
+        message_stop_frame(),
+    ]
+}
+
 pub fn message_start_frame(message_id: &str, model: &Value) -> String {
     encode_sse(
         "message_start",

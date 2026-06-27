@@ -61,6 +61,7 @@ pub struct Config {
     pub model_list_timeout_ms: u64,
     pub codex_auth_timeout_ms: u64,
     pub log_upstream: bool,
+    pub usage_command: String,
 }
 
 fn home_dir() -> PathBuf {
@@ -219,6 +220,7 @@ impl Config {
                 get(env, "LOG_UPSTREAM").as_deref(),
                 Some("1") | Some("true")
             ),
+            usage_command: get_or(env, "USAGE_COMMAND", "用量"),
         }
     }
 }

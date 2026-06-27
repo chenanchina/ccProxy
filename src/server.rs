@@ -368,6 +368,105 @@ async fn not_found(method: Method, uri: axum::http::Uri) -> Response {
     .into_openai_response()
 }
 
+// ---- proxy-handled usage command ----
+
+fn usage_command_matches(text: &str, config: &Config) -> bool {
+    let t = text.trim();
+    t == config.usage_command || matches!(t.to_lowercase().as_str(), "/usage" | "ccusage" | "/用量")
+}
+
+fn last_text_blocks(content: &Value) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    let arr = content.as_array()?;
+    let mut s = String::new();
+    for b in arr {
+        if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+            s.push_str(t);
+        }
+    }
+    Some(s)
+}
+
+/// Last user message text from an Anthropic `/v1/messages` request.
+fn last_user_text_anthropic(request: &Value) -> Option<String> {
+    let messages = request.get("messages")?.as_array()?;
+    let last = messages
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|v| v.as_str()) != Some("assistant"))?;
+    last_text_blocks(last.get("content")?)
+}
+
+/// Last user message text from a Responses `/v1/responses` request.
+fn last_user_text_responses(request: &Value) -> Option<String> {
+    let input = request.get("input")?;
+    if let Some(s) = input.as_str() {
+        return Some(s.to_string());
+    }
+    let last = input
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|it| it.get("role").and_then(|v| v.as_str()) == Some("user"))?;
+    last_text_blocks(last.get("content")?)
+}
+
+async fn usage_report(state: &AppState, token_id: Option<i64>) -> String {
+    let tokens = state.db.list_tokens().unwrap_or_default();
+    let account = state
+        .upstream
+        .account_snapshot()
+        .unwrap_or_else(|| json!({}));
+    crate::usage::build_report(&tokens, token_id, &account)
+}
+
+/// A synthetic Responses API reply (output + optional SSE) carrying the text.
+fn responses_synthetic(model: &Value, text: &str, stream: bool) -> Response {
+    let response = json!({
+        "id": format!("resp_{}", &uuid_like()),
+        "object": "response",
+        "model": model,
+        "status": "completed",
+        "output": [{
+            "type": "message", "role": "assistant",
+            "content": [{ "type": "output_text", "text": text }],
+        }],
+        "usage": { "input_tokens": 0, "output_tokens": 0 },
+    });
+    if !stream {
+        return Json(response).into_response();
+    }
+    let frames = vec![
+        sse_data(
+            &json!({ "type": "response.created", "response": { "id": response["id"], "model": model } }),
+        ),
+        sse_data(
+            &json!({ "type": "response.output_text.delta", "output_index": 0, "delta": text }),
+        ),
+        sse_data(&json!({ "type": "response.output_text.done", "output_index": 0, "text": text })),
+        sse_data(&json!({ "type": "response.completed", "response": response })),
+    ];
+    let body = async_stream::stream! {
+        for f in frames { yield Ok::<Bytes, std::io::Error>(Bytes::from(f)); }
+    };
+    sse_response(Body::from_stream(body))
+}
+
+fn sse_data(v: &Value) -> String {
+    format!("data: {v}\n\n")
+}
+
+fn uuid_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{n:032x}")
+}
+
 // ---- /v1/messages (Anthropic) ----
 
 async fn messages(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -390,17 +489,34 @@ async fn messages_inner(
     request: Value,
     token_id: Option<i64>,
 ) -> Result<Response, AppError> {
+    let stream = request
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let model = request.get("model").cloned().unwrap_or(Value::Null);
+
+    // Proxy-handled usage command: answer locally without calling the upstream.
+    if last_user_text_anthropic(&request)
+        .map(|t| usage_command_matches(&t, &state.config))
+        .unwrap_or(false)
+    {
+        let report = usage_report(&state, token_id).await;
+        if stream {
+            let frames = anthropic::synthetic_stream(&model, &report);
+            let body = async_stream::stream! {
+                for f in frames { yield Ok::<Bytes, std::io::Error>(Bytes::from(f)); }
+            };
+            return Ok(sse_response(Body::from_stream(body)));
+        }
+        return Ok(Json(anthropic::synthetic_message(&model, &report)).into_response());
+    }
+
     let payload = anthropic::anthropic_to_responses(
         &request,
         &state.config.default_instructions,
         &state.config.model_map,
     )?;
-    let stream = request
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let emit_thinking = anthropic::thinking_enabled(&request);
-    let model = request.get("model").cloned().unwrap_or(Value::Null);
     let model_str = model.as_str().map(|s| s.to_string());
     let log_up = state.config.log_upstream;
     if log_up {
@@ -519,6 +635,17 @@ async fn responses_inner(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    // Proxy-handled usage command: answer locally without calling the upstream.
+    if last_user_text_responses(&request)
+        .map(|t| usage_command_matches(&t, &state.config))
+        .unwrap_or(false)
+    {
+        let report = usage_report(&state, token_id).await;
+        let model = request.get("model").cloned().unwrap_or(Value::Null);
+        return Ok(responses_synthetic(&model, &report, stream_flag));
+    }
+
     let upstream = state.upstream.passthrough(request).await?;
     let status = StatusCode::from_u16(upstream.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
