@@ -229,6 +229,19 @@
     border-radius: 7px; font-weight: 500; font-size: 13px; }
   .subtabs button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 
+  /* ---- usage range selector ---- */
+  .range-bar { display: flex; flex-wrap: wrap; gap: 24px; align-items: center; }
+  .range-group { display: flex; align-items: center; gap: 10px; }
+  .range-lbl { font-size: 12px; color: var(--mut); font-weight: 550; white-space: nowrap; }
+  .chips { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { border: 1px solid var(--bd); background: var(--surface-2); color: var(--mut);
+    padding: 5px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500; }
+  .chips button.active { background: var(--acc); color: #fff; border-color: var(--acc); }
+  .range-summary { margin-top: 12px; font-size: 12px; color: var(--mut-2); }
+  #range-custom { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #range-custom input[type=datetime-local] { padding: 6px 8px; border: 1px solid var(--bd);
+    border-radius: 8px; background: var(--surface); color: var(--text); font-size: 12.5px; }
+
   /* ---- toast ---- */
   #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
     background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 10px; font-size: 13px;
@@ -321,6 +334,35 @@
 
       <!-- aggregate -->
       <div id="uview-agg">
+        <div class="card pad" style="margin-bottom:18px">
+          <div class="range-bar">
+            <div class="range-group">
+              <span class="range-lbl">时间段</span>
+              <div class="chips" id="range-chips">
+                <button data-off="0" class="active">全部</button>
+                <button data-off="3600000">近 1 小时</button>
+                <button data-off="86400000">近 1 天</button>
+                <button data-off="604800000">近 1 周</button>
+                <button data-off="2592000000">近 1 月</button>
+                <button data-custom="1">自定义</button>
+              </div>
+            </div>
+            <div class="range-group">
+              <span class="range-lbl">额度窗口</span>
+              <div class="chips" id="window-chips">
+                <button data-off="18000000">5 小时窗口</button>
+                <button data-off="604800000">7 天窗口</button>
+              </div>
+            </div>
+          </div>
+          <div id="range-custom" style="display:none;margin-top:12px">
+            <input type="datetime-local" id="range-start" />
+            <span style="color:var(--mut)">~</span>
+            <input type="datetime-local" id="range-end" />
+            <button class="sm" id="range-apply">应用</button>
+          </div>
+          <div id="range-summary" class="range-summary"></div>
+        </div>
         <div class="card pad" style="margin-bottom:18px">
           <div class="chart-head">
             <h2>各使用者 Token 消耗</h2>
@@ -703,7 +745,7 @@ function exportUsageCsv() {
 function renderUsageAgg(tokens) {
   const rows = tokens.map(t => {
     const input = t.input_tokens || 0, output = t.output_tokens || 0, reasoning = t.reasoning_tokens || 0;
-    return { name: t.name, requests: t.requests || 0, input, output, reasoning, total: input + output + reasoning };
+    return { name: t.name || "master", requests: t.requests || 0, input, output, reasoning, total: input + output + reasoning };
   }).sort((a, b) => b.total - a.total);
   const grand = rows.reduce((s, r) => s + r.total, 0);
   const max = Math.max(1, ...rows.map(r => r.total));
@@ -735,13 +777,44 @@ function renderUsageAgg(tokens) {
       <td class="num" style="font-weight:600">${fmtNum(r.total)}</td>
       <td class="num">${pct.toFixed(1)}%</td>
     </tr>`;
-  }).join("") : '<tr><td colspan="7" class="empty">还没有 token。</td></tr>';
+  }).join("") : '<tr><td colspan="7" class="empty">该时间段暂无用量记录。</td></tr>';
+}
+
+let usageRange = { from: 0, to: 0 };  // absolute epoch-ms; 0 = unbounded
+
+function renderRangeSummary() {
+  const el = document.getElementById("range-summary");
+  const { from, to } = usageRange;
+  if (!from && !to) { el.textContent = "统计范围：全部历史"; return; }
+  const f = from ? new Date(from).toLocaleString() : "最早";
+  const t = to ? new Date(to).toLocaleString() : "现在";
+  el.textContent = `统计范围：${f} ~ ${t}`;
+}
+
+function setActiveChip(btn) {
+  document.querySelectorAll("#range-chips button, #window-chips button").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+}
+
+function onRangeChip(btn) {
+  document.getElementById("range-custom").style.display = "none";
+  if (btn.dataset.custom) {
+    setActiveChip(btn);
+    document.getElementById("range-custom").style.display = "";
+    return;
+  }
+  const off = parseInt(btn.dataset.off, 10) || 0;
+  usageRange = { from: off ? Date.now() - off : 0, to: 0 };
+  setActiveChip(btn);
+  loadUsageAgg();
 }
 
 async function loadUsageAgg() {
   showErr("");
   try {
-    renderUsageAgg(await api("GET", "/admin/api/tokens"));
+    const { from, to } = usageRange;
+    renderUsageAgg(await api("GET", `/admin/api/usage/summary?from=${from}&to=${to}`));
+    renderRangeSummary();
   } catch (e) { showErr(e.message); }
 }
 
@@ -819,6 +892,16 @@ document.getElementById("tokens-body").addEventListener("click", async (e) => {
 document.getElementById("usage-refresh").addEventListener("click", () => usageView === "agg" ? loadUsageAgg() : loadUsage());
 document.getElementById("usage-filter").addEventListener("change", loadUsage);
 document.getElementById("usage-export").addEventListener("click", exportUsageCsv);
+
+document.querySelectorAll("#range-chips button, #window-chips button").forEach(btn => {
+  btn.addEventListener("click", () => onRangeChip(btn));
+});
+document.getElementById("range-apply").addEventListener("click", () => {
+  const s = document.getElementById("range-start").value;
+  const e = document.getElementById("range-end").value;
+  usageRange = { from: s ? new Date(s).getTime() : 0, to: e ? new Date(e).getTime() : 0 };
+  loadUsageAgg();
+});
 
 document.querySelectorAll(".tabs button").forEach(btn => {
   btn.addEventListener("click", () => {

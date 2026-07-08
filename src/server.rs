@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/api/tokens/{id}/reset", post(admin_reset_token))
         .route("/admin/api/usage", get(admin_usage))
+        .route("/admin/api/usage/summary", get(admin_usage_summary))
         .route("/admin/api/account", get(admin_account))
         .fallback(not_found)
         .layer(middleware::from_fn(cors))
@@ -899,6 +900,23 @@ async fn admin_usage(
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(200);
     match state.db.list_usage(token_id, limit) {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn admin_usage_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    // Absolute epoch-ms bounds; from=0 means from the beginning, to=0 means up to now.
+    let from = query.get("from").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let to = query.get("to").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    match state.db.usage_summary(from, to) {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => e.into_openai_response(),
     }

@@ -420,4 +420,46 @@ impl Db {
         }
         Ok(out)
     }
+
+    /// Aggregates usage grouped by token within [from_ms, to_ms). `to_ms == 0`
+    /// means no upper bound (up to now). Includes a row for master-key usage
+    /// (token_id NULL, name NULL), and only tokens that have usage in the range.
+    pub fn usage_summary(&self, from_ms: i64, to_ms: i64) -> Result<Vec<Value>, AppError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| AppError::new(500, "Database lock poisoned", "database_error"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT u.token_id, t.name,
+                        COALESCE(SUM(u.input_tokens), 0),
+                        COALESCE(SUM(u.output_tokens), 0),
+                        COALESCE(SUM(u.reasoning_tokens), 0),
+                        COUNT(u.id)
+                 FROM usage u LEFT JOIN tokens t ON t.id = u.token_id
+                 WHERE u.ts >= ?1 AND (?2 = 0 OR u.ts < ?2)
+                 GROUP BY u.token_id
+                 ORDER BY (COALESCE(SUM(u.input_tokens), 0)
+                         + COALESCE(SUM(u.output_tokens), 0)
+                         + COALESCE(SUM(u.reasoning_tokens), 0)) DESC",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![from_ms, to_ms], |row| {
+                Ok(json!({
+                    "token_id": row.get::<_, Option<i64>>(0)?,
+                    "name": row.get::<_, Option<String>>(1)?,
+                    "input_tokens": row.get::<_, i64>(2)?,
+                    "output_tokens": row.get::<_, i64>(3)?,
+                    "reasoning_tokens": row.get::<_, i64>(4)?,
+                    "requests": row.get::<_, i64>(5)?,
+                }))
+            })
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(db_err)?);
+        }
+        Ok(out)
+    }
 }
