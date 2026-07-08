@@ -2,31 +2,28 @@
 #
 # ccProxy one-shot deployer for Ubuntu/Debian.
 #
-# Sets up the full chain: 客户端 →(HTTPS)Caddy → ccProxy →(UPSTREAM_PROXY_URL)mihomo → 节点 → chatgpt.com
+# 链路: 客户端 →(HTTPS)Caddy → ccProxy →(UPSTREAM_PROXY_URL)mihomo → 节点 → chatgpt.com
 #
-#   1. 基础依赖 + NTP
-#   2. 本地代理 mihomo(可选,给上游一个出口)
-#   3. ccProxy(deb 包 或 源码 server.sh)
-#   4. 写 /etc/ccproxy/.env 并重启
-#   5. Caddy 自动 HTTPS 反代(可选,设了域名才装)
+# 流程:先一次性采集所有信息 → 用(可本地上传的)mihomo 配好代理并验证 →
+#       验证通过后把代理导出为环境变量,后续下载 deb / 装 Caddy 全走这个代理 →
+#       安装 ccProxy → 写 /etc/ccproxy/.env 并重启 → 可选 Caddy HTTPS。
 #
 # 用法:
-#   sudo ./scripts/deploy.sh              # 全交互
-#   CCP_INSTALL_MIHOMO=no sudo -E ./scripts/deploy.sh   # 海外直连,不装代理
-#   非交互一键示例:
-#     CCP_SUB_URL='https://airport/sub' CCP_ADMIN_KEY='xxx' \
-#     CCP_DOMAIN='ccp.example.com' sudo -E ./scripts/deploy.sh
+#   sudo -E bash deploy.sh                          # 全交互
+#   # 国内服务器 + 已上传的 mihomo 二进制/压缩包:
+#   CCP_MIHOMO_BIN=~/mihomo CCP_SUB_URL='https://airport/sub' sudo -E bash deploy.sh
 #
 # 常用环境变量(不设则交互询问,可留空表示跳过):
-#   CCP_INSTALL_METHOD   deb | source        (默认 deb;仓库内运行时可选 source)
-#   CCP_DEB_URL          .deb 下载地址        (deb 模式;留空则查 GitHub 最新 release)
-#   CCP_INSTALL_MIHOMO   yes | no             (是否装本地代理 mihomo)
-#   CCP_SUB_URL          机场订阅链接          (装 mihomo 时用)
-#   CCP_MIHOMO_PORT      本地代理端口          (默认 7890)
-#   CCP_MIHOMO_VERSION   mihomo 版本           (默认见下方 DEFAULT_MIHOMO_VERSION)
+#   CCP_INSTALL_MIHOMO   yes | no             是否配置本地代理 mihomo
+#   CCP_MIHOMO_BIN       路径                 已上传的 mihomo 二进制或 .gz(留空则从 GitHub 下)
+#   CCP_SUB_URL          机场订阅链接
+#   CCP_MIHOMO_PORT      本地代理端口         (默认 7890)
+#   CCP_MIHOMO_VERSION   GitHub 下载用的版本  (默认见 DEFAULT_MIHOMO_VERSION)
+#   CCP_INSTALL_METHOD   deb | source         (默认 deb)
+#   CCP_DEB_URL          .deb 地址            (留空=查 GitHub 最新;本地包用 file:///路径)
 #   CCP_ADMIN_KEY        /admin 管理密码       (留空自动生成)
-#   CCP_PROXY_KEY        主密钥 PROXY_API_KEY  (可选,留空则不设)
-#   CCP_DOMAIN           对外域名              (设了才装 Caddy 走 HTTPS)
+#   CCP_PROXY_KEY        主密钥 PROXY_API_KEY (可选)
+#   CCP_DOMAIN           对外域名             (设了才装 Caddy 走 HTTPS)
 #
 set -euo pipefail
 
@@ -66,7 +63,7 @@ yesno() {
   esac
 }
 
-# set_env KEY VALUE —— 删掉旧行(含注释形态)再追加,幂等且不经 sed 解释取值。
+# set_env KEY VALUE —— 删掉旧行(含注释形态)再追加,幂等且取值不经 sed 解释。
 set_env() {
   local key="$1" val="$2"
   $SUDO sed -i -E "/^#?[[:space:]]*${key}=/d" "$ENVFILE"
@@ -81,35 +78,74 @@ gen_secret() {
   fi
 }
 
-# ---------- 1. 基础依赖 ----------
+# 探测已上传的 mihomo(二进制或 .gz),给交互默认值。
+detect_mihomo() {
+  local d p
+  for d in "$PWD" "$HOME" ${SUDO_USER:+/home/$SUDO_USER} /root; do
+    for p in "$d"/mihomo "$d"/mihomo*.gz; do
+      [ -f "$p" ] && { echo "$p"; return; }
+    done
+  done
+}
+
+# ---------- 阶段 0:采集所有信息 ----------
+log "采集部署信息"
+yesno CCP_INSTALL_MIHOMO "是否配置本地代理 mihomo?海外直连可选 no [Y/n]: " yes
+if [ "$CCP_INSTALL_MIHOMO" = "yes" ]; then
+  det="$(detect_mihomo || true)"
+  ask CCP_MIHOMO_BIN "已上传的 mihomo 二进制或 .gz 路径(回车=从 GitHub 下载)${det:+ [默认 $det]}: " "$det"
+  ask CCP_SUB_URL "机场订阅链接(回车则稍后手填 /opt/mihomo/config.yaml): "
+fi
+MIHOMO_PORT="${CCP_MIHOMO_PORT:-7890}"
+
+default_method="deb"
+[ -f "$ROOT_DIR/Cargo.toml" ] && default_method="${CCP_INSTALL_METHOD:-deb}"
+ask CCP_INSTALL_METHOD "ccProxy 安装方式 deb/source [${default_method}]: " "$default_method"
+if [ "$CCP_INSTALL_METHOD" != "source" ]; then
+  ask CCP_DEB_URL "ccProxy .deb 地址(回车=查 GitHub 最新;本地包用 file:///绝对路径): "
+fi
+
+ask CCP_ADMIN_KEY "管理密码 ADMIN_API_KEY(回车自动生成): "
+ask CCP_DOMAIN "对外域名(设了才装 Caddy 走 HTTPS,回车跳过): "
+
+# ---------- 阶段 1:基础依赖 ----------
 log "安装基础依赖并开启 NTP"
 $SUDO apt-get update -y
 $SUDO apt-get install -y curl wget ca-certificates gnupg
 $SUDO timedatectl set-ntp true 2>/dev/null || true
 
-# ---------- 2. 本地代理 mihomo ----------
-yesno CCP_INSTALL_MIHOMO "是否安装本地代理 mihomo?海外直连可选 no [Y/n]: " yes
-MIHOMO_PORT="${CCP_MIHOMO_PORT:-7890}"
+# ---------- 阶段 2:mihomo 代理(先配好,后续下载走它) ----------
 UPSTREAM=""
-
 if [ "$CCP_INSTALL_MIHOMO" = "yes" ]; then
-  ask CCP_SUB_URL "机场订阅链接(装 mihomo 必填,回车跳过则稍后手填): "
-  ver="${CCP_MIHOMO_VERSION:-$DEFAULT_MIHOMO_VERSION}"
-  case "$(uname -m)" in
-    x86_64)  march="amd64-compatible" ;;
-    aarch64) march="arm64" ;;
-    *) die "未知架构 $(uname -m),请手动装 mihomo" ;;
-  esac
+  if [ -n "${CCP_MIHOMO_BIN:-}" ] && [ -f "$CCP_MIHOMO_BIN" ]; then
+    log "使用本地 mihomo: $CCP_MIHOMO_BIN"
+    if [[ "$CCP_MIHOMO_BIN" == *.gz ]]; then
+      tmp="$(mktemp)"
+      gunzip -c "$CCP_MIHOMO_BIN" > "$tmp"
+      $SUDO install -m 0755 "$tmp" /usr/local/bin/mihomo
+      rm -f "$tmp"
+    else
+      $SUDO install -m 0755 "$CCP_MIHOMO_BIN" /usr/local/bin/mihomo
+    fi
+  elif [ -x /usr/local/bin/mihomo ]; then
+    log "复用已安装的 /usr/local/bin/mihomo"
+  else
+    ver="${CCP_MIHOMO_VERSION:-$DEFAULT_MIHOMO_VERSION}"
+    case "$(uname -m)" in
+      x86_64)  march="amd64-compatible" ;;
+      aarch64) march="arm64" ;;
+      *) die "未知架构 $(uname -m),请上传 mihomo 并用 CCP_MIHOMO_BIN 指定" ;;
+    esac
+    log "从 GitHub 下载 mihomo ${ver} (${march})"
+    tmp="$(mktemp)"
+    url="https://github.com/MetaCubeX/mihomo/releases/download/${ver}/mihomo-linux-${march}-${ver}.gz"
+    curl -fsSL "$url" -o "${tmp}.gz" || die "mihomo 下载失败,建议上传后用 CCP_MIHOMO_BIN 指定: $url"
+    gunzip -f "${tmp}.gz"
+    $SUDO install -m 0755 "$tmp" /usr/local/bin/mihomo
+    rm -f "$tmp"
+  fi
 
-  log "下载 mihomo ${ver} (${march})"
   $SUDO mkdir -p /opt/mihomo/providers
-  tmp="$(mktemp)"
-  url="https://github.com/MetaCubeX/mihomo/releases/download/${ver}/mihomo-linux-${march}-${ver}.gz"
-  curl -fsSL "$url" -o "${tmp}.gz" || die "mihomo 下载失败: $url"
-  gunzip -f "${tmp}.gz"
-  $SUDO install -m 0755 "$tmp" /usr/local/bin/mihomo
-  rm -f "$tmp"
-
   if [ -f /opt/mihomo/config.yaml ]; then
     log "已存在 /opt/mihomo/config.yaml,保留不覆盖"
   elif [ -n "${CCP_SUB_URL:-}" ]; then
@@ -153,7 +189,7 @@ rules:
 EOF
   fi
 
-  log "安装 mihomo systemd 服务"
+  log "安装并启动 mihomo systemd 服务"
   $SUDO tee /etc/systemd/system/mihomo.service >/dev/null <<'EOF'
 [Unit]
 Description=mihomo proxy
@@ -170,27 +206,31 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   $SUDO systemctl daemon-reload
-  $SUDO systemctl enable --now mihomo
+  $SUDO systemctl enable mihomo
+  $SUDO systemctl restart mihomo
   UPSTREAM="http://127.0.0.1:${MIHOMO_PORT}"
 
-  log "验证代理出口(等待节点就绪)"
-  sleep 3
-  if curl -x "$UPSTREAM" -fsS https://chatgpt.com -o /dev/null -w '%{http_code}\n' 2>/dev/null; then
-    log "代理可访问 chatgpt.com"
+  log "验证代理出口(等待订阅拉取和节点就绪)"
+  ok=0
+  for _ in 1 2 3 4 5 6; do
+    if curl -x "$UPSTREAM" -fsS https://chatgpt.com -o /dev/null 2>/dev/null; then ok=1; break; fi
+    sleep 3
+  done
+  if [ "$ok" -eq 1 ]; then
+    log "代理可访问 chatgpt.com,后续下载将走此代理"
+    export https_proxy="$UPSTREAM" http_proxy="$UPSTREAM" all_proxy="$UPSTREAM"
+    export no_proxy="127.0.0.1,localhost,::1"
   else
-    warn "代理暂时不通,检查订阅/节点: journalctl -u mihomo -f"
+    warn "代理暂时不通;后续 GitHub 下载可能失败。排查: journalctl -u mihomo -f"
+    warn "可先修好代理再重跑,或用 CCP_DEB_URL=file:///本地路径 走本地 deb"
   fi
 fi
 
-# ---------- 3. 安装 ccProxy ----------
-default_method="deb"
-[ -f "$ROOT_DIR/Cargo.toml" ] && default_method="${CCP_INSTALL_METHOD:-deb}"
-ask CCP_INSTALL_METHOD "ccProxy 安装方式 deb/source [${default_method}]: " "$default_method"
-
+# ---------- 阶段 3:安装 ccProxy ----------
 if [ "$CCP_INSTALL_METHOD" = "source" ]; then
   [ -f "$ROOT_DIR/Cargo.toml" ] || die "source 模式需在仓库目录内运行"
   if ! command -v cargo >/dev/null 2>&1; then
-    log "安装 Rust 工具链"
+    log "安装 Rust 工具链(经代理)"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     # shellcheck disable=SC1091
     source "$HOME/.cargo/env"
@@ -205,7 +245,7 @@ else
       | grep -oE '"browser_download_url":[[:space:]]*"[^"]+amd64\.deb"' \
       | head -1 | sed -E 's/.*"(https[^"]+)"/\1/')" || true
   fi
-  [ -n "$deb_url" ] || die "拿不到 .deb 地址,请设 CCP_DEB_URL 或改用 source 模式"
+  [ -n "$deb_url" ] || die "拿不到 .deb 地址,请设 CCP_DEB_URL(可 file:///本地路径)或改用 source 模式"
   log "下载并安装 $deb_url"
   deb="$(mktemp --suffix=.deb)"
   curl -fsSL "$deb_url" -o "$deb"
@@ -215,7 +255,7 @@ fi
 
 [ -f "$ENVFILE" ] || die "$ENVFILE 未生成,安装可能失败"
 
-# ---------- 4. 写配置 ----------
+# ---------- 阶段 4:写配置并重启 ----------
 ADMIN_KEY="${CCP_ADMIN_KEY:-}"
 if [ -z "$ADMIN_KEY" ]; then
   ADMIN_KEY="$(gen_secret)"
@@ -227,9 +267,7 @@ set_env HOST 127.0.0.1
 set_env OPENAI_AUTH_MODE codex
 set_env ADMIN_API_KEY "$ADMIN_KEY"
 [ -n "${CCP_PROXY_KEY:-}" ] && set_env PROXY_API_KEY "$CCP_PROXY_KEY"
-if [ -n "$UPSTREAM" ]; then
-  set_env UPSTREAM_PROXY_URL "$UPSTREAM"
-fi
+[ -n "$UPSTREAM" ] && set_env UPSTREAM_PROXY_URL "$UPSTREAM"
 $SUDO chmod 600 "$ENVFILE"
 
 log "重启 ccProxy"
@@ -237,8 +275,7 @@ $SUDO systemctl restart ccproxy
 sleep 1
 $SUDO systemctl --no-pager --full status ccproxy | head -n 8 || true
 
-# ---------- 5. Caddy HTTPS 反代 ----------
-ask CCP_DOMAIN "对外域名(设了才装 Caddy 走 HTTPS,回车跳过): "
+# ---------- 阶段 5:Caddy HTTPS 反代 ----------
 if [ -n "${CCP_DOMAIN:-}" ]; then
   if ! command -v caddy >/dev/null 2>&1; then
     log "安装 Caddy"
