@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS usage (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_token ON usage(token_id);
 CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage(ts);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 ";
 
 pub struct Db {
@@ -83,6 +87,31 @@ impl Db {
         Ok(Db {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        let conn = self.conn.lock().ok()?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), AppError> {
+        let conn = self.conn.lock().map_err(|_| {
+            AppError::new(500, "Database lock poisoned", "database_error")
+        })?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     /// Returns the token id when the key matches an enabled token, and bumps last_used_at.

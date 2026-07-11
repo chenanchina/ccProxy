@@ -8,19 +8,31 @@ use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT,
 };
 use serde_json::{json, Map, Value};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 pub struct Upstream {
     pub config: Arc<Config>,
     pub http: reqwest::Client,
     pub auth: Option<Arc<CodexAuth>>,
+    /// Codex CLI version reported to the ChatGPT backend. Runtime-mutable (admin
+    /// can change it, persisted separately) so new models gated behind a newer
+    /// client version can be enabled without a restart.
+    client_version: RwLock<String>,
     /// Stable per-process session id sent to the Codex backend; lets ChatGPT's
     /// prompt cache stay warm across requests from this proxy instance.
     session_id: String,
     /// Latest Codex account rate-limit snapshot, captured from upstream response
     /// headers on each request (admin dashboard reads it).
     account: Mutex<Option<Value>>,
+}
+
+/// Per-request overrides forwarded from a native Codex client on the passthrough
+/// path, so a real Codex CLI rides its own (up-to-date) version instead of ours.
+#[derive(Default)]
+pub struct ClientHints {
+    pub version: Option<String>,
+    pub originator: Option<String>,
 }
 
 fn now_ms() -> i64 {
@@ -47,13 +59,32 @@ fn random_uuid_v4() -> String {
 }
 
 impl Upstream {
-    pub fn new(config: Arc<Config>, http: reqwest::Client, auth: Option<Arc<CodexAuth>>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        http: reqwest::Client,
+        auth: Option<Arc<CodexAuth>>,
+        client_version: String,
+    ) -> Self {
         Upstream {
             config,
             http,
             auth,
+            client_version: RwLock::new(client_version),
             session_id: random_uuid_v4(),
             account: Mutex::new(None),
+        }
+    }
+
+    pub fn codex_client_version(&self) -> String {
+        self.client_version
+            .read()
+            .map(|v| v.clone())
+            .unwrap_or_else(|_| self.config.codex_client_version.clone())
+    }
+
+    pub fn set_codex_client_version(&self, version: String) {
+        if let Ok(mut v) = self.client_version.write() {
+            *v = version;
         }
     }
 
@@ -86,7 +117,7 @@ impl Upstream {
         self.config.auth_mode == AuthMode::Codex
     }
 
-    pub async fn prepare(&self, stream: bool) -> Result<Prepared, AppError> {
+    pub async fn prepare(&self, stream: bool, hints: &ClientHints) -> Result<Prepared, AppError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(USER_AGENT, HeaderValue::from_static("ccproxy/0.1.0"));
@@ -138,21 +169,24 @@ impl Upstream {
                 }
                 // Mimic the real Codex CLI so the ChatGPT backend treats us as a
                 // first-class client (avoids unknown-originator throttling and
-                // keeps prompt caching keyed to a stable session).
-                headers.insert(
-                    HeaderName::from_static("originator"),
-                    HeaderValue::from_static("codex_cli_rs"),
-                );
+                // keeps prompt caching keyed to a stable session). A native Codex
+                // client on the passthrough path rides its own version/originator.
+                let originator = hints.originator.as_deref().unwrap_or("codex_cli_rs");
+                let version = hints
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| self.codex_client_version());
+                if let Ok(val) = HeaderValue::from_str(originator) {
+                    headers.insert(HeaderName::from_static("originator"), val);
+                }
                 if let Ok(val) = HeaderValue::from_str(&self.session_id) {
                     headers.insert(HeaderName::from_static("session_id"), val);
                 }
-                if let Ok(val) = HeaderValue::from_str(&self.config.codex_client_version) {
+                if let Ok(val) = HeaderValue::from_str(&version) {
                     headers.insert(HeaderName::from_static("version"), val);
                 }
-                if let Ok(val) = HeaderValue::from_str(&format!(
-                    "codex_cli_rs/{} (ccproxy)",
-                    self.config.codex_client_version
-                )) {
+                if let Ok(val) = HeaderValue::from_str(&format!("codex_cli_rs/{version} (ccproxy)"))
+                {
                     headers.insert(USER_AGENT, val);
                 }
                 Ok(Prepared {
@@ -184,7 +218,7 @@ impl Upstream {
     /// streamed and collected into a single response object.
     pub async fn create_response(&self, payload: Value) -> Result<Value, AppError> {
         let upstream_stream = self.is_codex();
-        let prepared = self.prepare(upstream_stream).await?;
+        let prepared = self.prepare(upstream_stream, &ClientHints::default()).await?;
         let mut body = self.shape_payload(payload);
         body["stream"] = json!(upstream_stream);
 
@@ -217,7 +251,7 @@ impl Upstream {
         &self,
         payload: Value,
     ) -> Result<impl futures_util::Stream<Item = Result<SseEvent, AppError>>, AppError> {
-        let prepared = self.prepare(true).await?;
+        let prepared = self.prepare(true, &ClientHints::default()).await?;
         let mut body = self.shape_payload(payload);
         body["stream"] = json!(true);
 
@@ -243,12 +277,16 @@ impl Upstream {
     /// Raw passthrough for the native Codex/OpenAI Responses path. Forwards the
     /// client payload verbatim (only injecting auth) and returns the upstream
     /// response so the caller can relay status and body unchanged.
-    pub async fn passthrough(&self, payload: Value) -> Result<reqwest::Response, AppError> {
+    pub async fn passthrough(
+        &self,
+        payload: Value,
+        hints: ClientHints,
+    ) -> Result<reqwest::Response, AppError> {
         let stream = payload
             .get("stream")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let prepared = self.prepare(stream).await?;
+        let prepared = self.prepare(stream, &hints).await?;
 
         let resp = self
             .http

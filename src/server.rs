@@ -4,7 +4,7 @@ use crate::config::{AuthMode, Config};
 use crate::db::Db;
 use crate::error::AppError;
 use crate::models::list_models;
-use crate::upstream::Upstream;
+use crate::upstream::{ClientHints, Upstream};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -60,6 +60,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/api/auth/import", post(admin_auth_import))
         .route("/admin/api/auth/refresh", post(admin_auth_refresh))
         .route("/admin/api/auth/logout", post(admin_auth_logout))
+        .route(
+            "/admin/api/settings",
+            get(admin_get_settings).put(admin_update_settings),
+        )
         .fallback(not_found)
         .layer(middleware::from_fn(cors))
         .layer(DefaultBodyLimit::max(state.config.max_body_bytes))
@@ -125,6 +129,14 @@ fn require_local_auth_for_url(
         return Ok(());
     }
     require_local_auth(headers, proxy_api_key)
+}
+
+fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn header_key(headers: &HeaderMap) -> Option<String> {
@@ -664,7 +676,13 @@ async fn responses(State(state): State<AppState>, headers: HeaderMap, body: Byte
         Ok(v) => v,
         Err(e) => return e.into_openai_response(),
     };
-    match responses_inner(state, request, token_id).await {
+    // A native Codex client carries its own (up-to-date) version/originator; ride
+    // those on passthrough instead of overwriting with our configured version.
+    let hints = ClientHints {
+        version: header_str(&headers, "version"),
+        originator: header_str(&headers, "originator"),
+    };
+    match responses_inner(state, request, token_id, hints).await {
         Ok(r) => r,
         Err(e) => e.into_openai_response(),
     }
@@ -674,6 +692,7 @@ async fn responses_inner(
     state: AppState,
     request: Value,
     token_id: Option<i64>,
+    hints: ClientHints,
 ) -> Result<Response, AppError> {
     let model_str = request
         .get("model")
@@ -694,7 +713,7 @@ async fn responses_inner(
         return Ok(responses_synthetic(&model, &report, stream_flag));
     }
 
-    let upstream = state.upstream.passthrough(request).await?;
+    let upstream = state.upstream.passthrough(request, hints).await?;
     let status = StatusCode::from_u16(upstream.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let content_type = upstream
@@ -1083,6 +1102,50 @@ async fn admin_auth_logout(
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_openai_response(),
     }
+}
+
+async fn admin_get_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    Json(json!({
+        "codex_client_version": state.upstream.codex_client_version(),
+    }))
+    .into_response()
+}
+
+async fn admin_update_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    let req = match parse_body(&body) {
+        Ok(v) => v,
+        Err(e) => return e.into_openai_response(),
+    };
+    if let Some(v) = req.get("codex_client_version") {
+        let version = v.as_str().unwrap_or("").trim();
+        if version.is_empty() {
+            return AppError::bad_request("codex_client_version must be a non-empty string")
+                .into_openai_response();
+        }
+        if let Err(e) = state.db.set_setting("codex_client_version", version) {
+            return e.into_openai_response();
+        }
+        state.upstream.set_codex_client_version(version.to_string());
+    }
+    Json(json!({
+        "codex_client_version": state.upstream.codex_client_version(),
+    }))
+    .into_response()
 }
 
 // ---- helpers ----

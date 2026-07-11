@@ -49,7 +49,17 @@ async fn main() {
         }
     };
 
-    let upstream = Arc::new(Upstream::new(config.clone(), http, codex_auth.clone()));
+    // Admin-set version (persisted) wins over the env/default so a runtime change
+    // survives restarts; otherwise fall back to CODEX_CLIENT_VERSION / built-in.
+    let client_version = db
+        .get_setting("codex_client_version")
+        .unwrap_or_else(|| config.codex_client_version.clone());
+    let upstream = Arc::new(Upstream::new(
+        config.clone(),
+        http,
+        codex_auth.clone(),
+        client_version,
+    ));
 
     // Periodically prune old usage rows so the database does not grow unbounded.
     if config.usage_retention_days > 0 {

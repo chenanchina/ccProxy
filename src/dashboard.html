@@ -453,6 +453,19 @@
         </div>
       </div>
 
+      <div class="card pad" id="auth-version" style="margin-bottom:18px;display:none">
+        <h2 style="font-size:14px;font-weight:600;margin:0 0 5px">Codex 客户端版本</h2>
+        <div class="muted" style="font-size:12.5px;margin-bottom:12px">
+          上报给 ChatGPT 后端的 Codex CLI 版本号。新模型（如 <code style="font-size:12px">gpt-5.6-sol</code>）可能要求更新的版本；改这里立即生效并持久化（重启保留）。真 Codex CLI 走 <code style="font-size:12px">/v1/responses</code> 时会自动用它自己带的版本。
+        </div>
+        <div class="row" style="align-items:center">
+          <input id="version-input" placeholder="如 0.144.1" style="flex:1;min-width:130px;max-width:200px" />
+          <button id="version-latest">查询最新</button>
+          <button class="primary" id="version-save">保存</button>
+          <span id="version-hint" class="muted" style="font-size:12.5px"></span>
+        </div>
+      </div>
+
       <div class="card pad" id="auth-device-panel" style="display:none"></div>
     </section>
   </div>
@@ -982,6 +995,7 @@ function renderAuthStatus(s) {
   box.classList.remove("muted");
   const apiKeyMode = s.auth_mode === "api-key";
   document.getElementById("auth-actions").style.display = apiKeyMode ? "none" : "";
+  document.getElementById("auth-version").style.display = apiKeyMode ? "none" : "";
   if (apiKeyMode) {
     box.innerHTML = `<div class="kv">
         <div class="k">状态</div><div class="v">${s.authenticated ? '<span class="pill on">已配置</span>' : '<span class="pill off">未配置</span>'}</div>
@@ -1011,6 +1025,39 @@ async function loadAuthStatus() {
     const s = await api("GET", "/admin/api/auth/status");
     lastAuthStatus = s;
     renderAuthStatus(s);
+    loadSettings();
+  } catch (e) { showErr(e.message); }
+}
+
+async function loadSettings() {
+  try {
+    const s = await api("GET", "/admin/api/settings");
+    if (s && s.codex_client_version) document.getElementById("version-input").value = s.codex_client_version;
+  } catch {}
+}
+
+async function queryLatestCodex() {
+  const hint = document.getElementById("version-hint");
+  hint.textContent = "查询中…";
+  try {
+    const r = await fetch("https://api.github.com/repos/openai/codex/releases/latest");
+    if (!r.ok) { hint.textContent = "查询失败: GitHub " + r.status; return; }
+    const ver = ((await r.json()).tag_name || "").replace(/^rust-/, "").replace(/^v/, "");
+    if (!ver) { hint.textContent = "无法解析版本"; return; }
+    document.getElementById("version-input").value = ver;
+    hint.textContent = "最新 " + ver + "，点保存生效";
+  } catch { hint.textContent = "查询失败: 无法连接 GitHub"; }
+}
+
+async function saveCodexVersion() {
+  showErr("");
+  const v = document.getElementById("version-input").value.trim();
+  if (!v) { showErr("请填写版本号"); return; }
+  try {
+    const r = await api("PUT", "/admin/api/settings", { codex_client_version: v });
+    document.getElementById("version-input").value = r.codex_client_version || v;
+    document.getElementById("version-hint").textContent = "";
+    toast("已保存 " + (r.codex_client_version || v));
   } catch (e) { showErr(e.message); }
 }
 
@@ -1131,6 +1178,8 @@ document.getElementById("auth-login-btn").addEventListener("click", startWebLogi
 document.getElementById("auth-device-btn").addEventListener("click", startDeviceLogin);
 document.getElementById("auth-refresh-token-btn").addEventListener("click", refreshToken);
 document.getElementById("auth-logout-btn").addEventListener("click", logoutCodex);
+document.getElementById("version-latest").addEventListener("click", queryLatestCodex);
+document.getElementById("version-save").addEventListener("click", saveCodexVersion);
 document.getElementById("auth-import-btn").addEventListener("click", () => {
   const p = document.getElementById("auth-import-panel");
   p.style.display = p.style.display === "none" ? "" : "none";

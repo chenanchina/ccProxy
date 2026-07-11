@@ -49,7 +49,7 @@ async fn list_codex_models(upstream: &Upstream) -> Option<Vec<Value>> {
     ))
     .ok()?;
     url.query_pairs_mut()
-        .append_pair("client_version", &config.codex_client_version);
+        .append_pair("client_version", &upstream.codex_client_version());
 
     let mut req = upstream
         .http

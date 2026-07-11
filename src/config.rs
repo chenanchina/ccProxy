@@ -167,7 +167,7 @@ impl Config {
                 "CODEX_TOKEN_URL",
                 "https://auth.openai.com/oauth/token",
             ),
-            codex_client_version: get_or(env, "CODEX_CLIENT_VERSION", "0.128.0"),
+            codex_client_version: get_or(env, "CODEX_CLIENT_VERSION", "0.144.1"),
             codex_auth_file: expand_home(&get_or(env, "CODEX_AUTH_FILE", "~/.codex/auth.json")),
             codex_client_id: get_or(env, "CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann"),
             codex_oauth_scope: get_or(
