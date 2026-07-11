@@ -88,12 +88,12 @@
   button.sm { padding: 6px 11px; font-size: 13px; }
 
   /* ---- inputs ---- */
-  input, select {
+  input, select, textarea {
     font: inherit; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--bd-strong);
     background: var(--surface); color: var(--text); transition: .15s; min-width: 0;
   }
-  input::placeholder { color: var(--mut-2); }
-  input:focus, select:focus { outline: none; border-color: var(--acc);
+  input::placeholder, textarea::placeholder { color: var(--mut-2); }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--acc);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 18%, transparent); }
   select { cursor: pointer; }
 
@@ -250,6 +250,14 @@
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   #toast svg { width: 15px; height: 15px; }
 
+  /* ---- auth ---- */
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 11px 22px; font-size: 13.5px; align-items: center; }
+  .kv .k { color: var(--mut); white-space: nowrap; }
+  .kv .v { font-variant-numeric: tabular-nums; }
+  #device-code { font-size: 17px; letter-spacing: 3px; padding: 7px 13px; }
+  #auth-import-text { width: 100%; min-height: 130px; resize: vertical;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+
   .fade { animation: fade .25s ease; }
   @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 </style>
@@ -292,6 +300,7 @@
     <div class="tabs">
       <button data-tab="tokens" class="active">Token</button>
       <button data-tab="usage">用量统计</button>
+      <button data-tab="auth">认证</button>
     </div>
 
     <!-- ---- tokens ---- -->
@@ -410,6 +419,41 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- ---- auth ---- -->
+    <section id="tab-auth" style="display:none">
+      <div class="card pad" style="margin-bottom:18px">
+        <div class="section-head" style="padding:0 0 14px">
+          <h2>Codex 认证状态</h2>
+          <button class="sm" id="auth-refresh">刷新</button>
+        </div>
+        <div id="auth-status" class="muted">加载中…</div>
+      </div>
+
+      <div class="card pad" id="auth-actions" style="margin-bottom:18px;display:none">
+        <h2 style="font-size:14px;font-weight:600;margin:0 0 12px">登录 / 管理</h2>
+        <div class="row">
+          <button class="primary" id="auth-login-btn">浏览器登录</button>
+          <button id="auth-device-btn">设备码登录</button>
+          <button id="auth-import-btn">导入 auth.json</button>
+          <button id="auth-refresh-token-btn">刷新 token</button>
+          <button class="link danger" id="auth-logout-btn" style="margin-left:auto">退出登录</button>
+        </div>
+        <div class="muted" style="font-size:12.5px;margin-top:11px">
+          浏览器登录适合本机；远程无浏览器的服务器可用设备码登录，或直接把本地 <code style="font-size:12px">~/.codex/auth.json</code> 粘贴导入。登录态写回该文件（<code style="font-size:12px">0600</code> 权限）。
+        </div>
+
+        <div id="auth-import-panel" style="display:none;margin-top:14px">
+          <textarea id="auth-import-text" placeholder='粘贴 ~/.codex/auth.json 的完整内容（也支持只粘 tokens 对象）'></textarea>
+          <div class="row" style="margin-top:10px">
+            <button class="primary sm" id="auth-import-submit">导入并保存</button>
+            <button class="ghost sm" id="auth-import-cancel">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card pad" id="auth-device-panel" style="display:none"></div>
     </section>
   </div>
 
@@ -910,8 +954,196 @@ document.querySelectorAll(".tabs button").forEach(btn => {
     const tab = btn.dataset.tab;
     document.getElementById("tab-tokens").style.display = tab === "tokens" ? "" : "none";
     document.getElementById("tab-usage").style.display = tab === "usage" ? "" : "none";
+    document.getElementById("tab-auth").style.display = tab === "auth" ? "" : "none";
     if (tab === "usage") showUsageView(usageView);
+    if (tab === "auth") loadAuthStatus();
   });
+});
+
+// ---- auth management ----
+let lastAuthStatus = null;
+let authPollTimer = null, devicePollTimer = null;
+
+function fmtRel(iso) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return "";
+  const diff = t - Date.now(), abs = Math.abs(diff), s = Math.round(abs / 1000);
+  let label;
+  if (s < 60) label = `${s} 秒`;
+  else if (s < 3600) label = `${Math.round(s / 60)} 分钟`;
+  else if (s < 86400) label = `${Math.round(s / 3600)} 小时`;
+  else label = `${Math.round(s / 86400)} 天`;
+  return diff >= 0 ? `${label}后` : `${label}前`;
+}
+
+function renderAuthStatus(s) {
+  const box = document.getElementById("auth-status");
+  box.classList.remove("muted");
+  const apiKeyMode = s.auth_mode === "api-key";
+  document.getElementById("auth-actions").style.display = apiKeyMode ? "none" : "";
+  if (apiKeyMode) {
+    box.innerHTML = `<div class="kv">
+        <div class="k">状态</div><div class="v">${s.authenticated ? '<span class="pill on">已配置</span>' : '<span class="pill off">未配置</span>'}</div>
+        <div class="k">认证方式</div><div class="v"><span class="badge">API Key 模式</span></div>
+      </div>
+      <div class="muted" style="font-size:12.5px;margin-top:12px">当前为 API Key 模式（OPENAI_AUTH_MODE=api-key），Codex OAuth 登录不适用。</div>`;
+    return;
+  }
+  const exp = s.access_token_expires_at;
+  const expired = exp ? new Date(exp).getTime() <= Date.now() : false;
+  const expVal = !exp ? '<span class="muted">—</span>'
+    : `<span class="${expired ? "status-bad" : "status-ok"}">${expired ? "已过期" : "有效"}</span>` +
+      ` <span class="muted">· ${expired ? "" : "将在 "}${fmtRel(exp)}${expired ? "" : "过期"} · ${fmtTs(new Date(exp).getTime())}</span>`;
+  const rows = [
+    ["状态", s.authenticated ? '<span class="pill on">已登录</span>' : '<span class="pill off">未登录</span>'],
+    ["账号 ID", s.account_id ? esc(s.account_id) : '<span class="muted">—</span>'],
+    ["Access Token", expVal],
+    ["Refresh Token", s.has_refresh_token ? '<span class="status-ok">有</span>' : '<span class="muted">无</span>'],
+    ["上次刷新", s.last_refresh ? `${fmtTs(new Date(s.last_refresh).getTime())} <span class="muted">· ${fmtRel(s.last_refresh)}</span>` : '<span class="muted">—</span>'],
+  ];
+  box.innerHTML = `<div class="kv">${rows.map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join("")}</div>`;
+}
+
+async function loadAuthStatus() {
+  showErr("");
+  try {
+    const s = await api("GET", "/admin/api/auth/status");
+    lastAuthStatus = s;
+    renderAuthStatus(s);
+  } catch (e) { showErr(e.message); }
+}
+
+function pollAuthUntilChanged(before) {
+  clearInterval(authPollTimer);
+  let tries = 0;
+  authPollTimer = setInterval(async () => {
+    if (++tries > 150) { clearInterval(authPollTimer); return; }
+    try {
+      const s = await api("GET", "/admin/api/auth/status");
+      lastAuthStatus = s;
+      renderAuthStatus(s);
+      const changed = s.last_refresh && s.last_refresh !== before.last_refresh;
+      if (changed || (s.authenticated && !before.authenticated)) {
+        clearInterval(authPollTimer);
+        toast("登录成功");
+      }
+    } catch {}
+  }, 2000);
+}
+
+async function startWebLogin() {
+  showErr("");
+  const before = lastAuthStatus || {};
+  try {
+    const r = await api("POST", "/admin/api/auth/login");
+    window.open(r.authorization_url, "_blank", "noopener");
+    toast("已打开登录页，完成后自动刷新");
+    pollAuthUntilChanged(before);
+  } catch (e) { showErr(e.message); }
+}
+
+async function startDeviceLogin() {
+  showErr("");
+  clearInterval(devicePollTimer);
+  const panel = document.getElementById("auth-device-panel");
+  const before = lastAuthStatus || {};
+  try {
+    const d = await api("POST", "/admin/api/auth/device/start");
+    panel.style.display = "";
+    panel.innerHTML = `
+      <h2 style="font-size:14px;font-weight:600;margin:0 0 12px">设备码登录</h2>
+      <div class="muted" style="font-size:13px;margin-bottom:12px">在任意设备打开下面的地址，输入验证码完成授权：</div>
+      <div class="row" style="margin-bottom:14px">
+        <a href="${esc(d.verification_url)}" target="_blank" rel="noopener" style="color:var(--acc);font-size:13.5px;word-break:break-all">${esc(d.verification_url)}</a>
+      </div>
+      <div class="row" style="align-items:center;gap:14px">
+        <span class="muted" style="font-size:13px">验证码</span>
+        <code class="token" id="device-code" data-token="${esc(d.user_code)}" title="点击复制">${esc(d.user_code)}${ICON.copy}</code>
+        <span id="device-msg" class="muted" style="font-size:12.5px">等待授权…</span>
+      </div>`;
+    const interval = Math.max(2, parseInt(d.interval, 10) || 5) * 1000;
+    let tries = 0;
+    const maxTries = Math.ceil((parseInt(d.expires_in, 10) || 900) * 1000 / interval);
+    devicePollTimer = setInterval(async () => {
+      if (++tries > maxTries) { clearInterval(devicePollTimer); setDeviceMsg("验证码已过期，请重试"); return; }
+      try {
+        const r = await api("POST", "/admin/api/auth/device/poll", { device_auth_id: d.device_auth_id, user_code: d.user_code });
+        if (r.status === "complete" || r.authenticated) {
+          clearInterval(devicePollTimer);
+          toast("登录成功");
+          panel.style.display = "none";
+          lastAuthStatus = { ...before, authenticated: false };
+          loadAuthStatus();
+        }
+      } catch (e) {
+        clearInterval(devicePollTimer);
+        setDeviceMsg(e.message);
+      }
+    }, interval);
+  } catch (e) { showErr(e.message); }
+}
+
+function setDeviceMsg(m) { const el = document.getElementById("device-msg"); if (el) el.textContent = m; }
+
+async function submitImport() {
+  showErr("");
+  const raw = document.getElementById("auth-import-text").value.trim();
+  if (!raw) { showErr("请粘贴 auth.json 内容"); return; }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { showErr("不是合法的 JSON，请检查粘贴内容"); return; }
+  try {
+    const s = await api("POST", "/admin/api/auth/import", parsed);
+    lastAuthStatus = s;
+    renderAuthStatus(s);
+    document.getElementById("auth-import-panel").style.display = "none";
+    document.getElementById("auth-import-text").value = "";
+    toast("已导入登录态");
+  } catch (e) { showErr(e.message); }
+}
+
+async function refreshToken() {
+  showErr("");
+  try {
+    const s = await api("POST", "/admin/api/auth/refresh");
+    lastAuthStatus = s;
+    renderAuthStatus(s);
+    toast("token 已刷新");
+  } catch (e) { showErr(e.message); }
+}
+
+async function logoutCodex() {
+  if (!confirm("退出登录会清除 Codex 登录态，代理将无法调用上游，直到重新登录。确定继续？")) return;
+  showErr("");
+  clearInterval(authPollTimer);
+  clearInterval(devicePollTimer);
+  document.getElementById("auth-device-panel").style.display = "none";
+  try {
+    await api("POST", "/admin/api/auth/logout");
+    toast("已退出登录");
+    loadAuthStatus();
+  } catch (e) { showErr(e.message); }
+}
+
+document.getElementById("auth-refresh").addEventListener("click", loadAuthStatus);
+document.getElementById("auth-login-btn").addEventListener("click", startWebLogin);
+document.getElementById("auth-device-btn").addEventListener("click", startDeviceLogin);
+document.getElementById("auth-refresh-token-btn").addEventListener("click", refreshToken);
+document.getElementById("auth-logout-btn").addEventListener("click", logoutCodex);
+document.getElementById("auth-import-btn").addEventListener("click", () => {
+  const p = document.getElementById("auth-import-panel");
+  p.style.display = p.style.display === "none" ? "" : "none";
+  if (p.style.display !== "none") document.getElementById("auth-import-text").focus();
+});
+document.getElementById("auth-import-cancel").addEventListener("click", () => {
+  document.getElementById("auth-import-panel").style.display = "none";
+  document.getElementById("auth-import-text").value = "";
+});
+document.getElementById("auth-import-submit").addEventListener("click", submitImport);
+document.getElementById("auth-device-panel").addEventListener("click", async (e) => {
+  const tok = e.target.closest("[data-token]");
+  if (tok) toast((await copyText(tok.dataset.token)) ? "验证码已复制" : "复制失败");
 });
 
 (async () => {

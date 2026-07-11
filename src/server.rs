@@ -53,6 +53,13 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/api/usage", get(admin_usage))
         .route("/admin/api/usage/summary", get(admin_usage_summary))
         .route("/admin/api/account", get(admin_account))
+        .route("/admin/api/auth/status", get(admin_auth_status))
+        .route("/admin/api/auth/login", post(admin_auth_login))
+        .route("/admin/api/auth/device/start", post(admin_auth_device_start))
+        .route("/admin/api/auth/device/poll", post(admin_auth_device_poll))
+        .route("/admin/api/auth/import", post(admin_auth_import))
+        .route("/admin/api/auth/refresh", post(admin_auth_refresh))
+        .route("/admin/api/auth/logout", post(admin_auth_logout))
         .fallback(not_found)
         .layer(middleware::from_fn(cors))
         .layer(DefaultBodyLimit::max(state.config.max_body_bytes))
@@ -229,6 +236,38 @@ async fn health(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
+async fn auth_status_value(state: &AppState) -> Value {
+    match &state.auth {
+        Some(auth) => auth.status().await,
+        None => json!({
+            "authenticated": state.config.openai_api_key.is_some(),
+            "auth_mode": "api-key",
+            "account_id": null,
+            "access_token_expires_at": null,
+            "has_refresh_token": false,
+            "last_refresh": null,
+        }),
+    }
+}
+
+async fn web_login_payload(state: &AppState) -> Result<Value, AppError> {
+    let Some(auth) = &state.auth else {
+        return Err(AppError::bad_request(
+            "Web login is only available when OPENAI_AUTH_MODE=codex",
+        ));
+    };
+    let redirect_uri = format!(
+        "http://{}:{}/auth/callback",
+        state.config.codex_oauth_redirect_host, state.config.port
+    );
+    let login = auth.start_login(redirect_uri.clone()).await;
+    Ok(json!({
+        "authorization_url": login.authorization_url,
+        "expires_at": login.expires_at,
+        "callback_url": redirect_uri,
+    }))
+}
+
 async fn auth_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -237,18 +276,7 @@ async fn auth_status(
     if let Err(e) = require_local_auth_for_url(&headers, &query, &state.config.proxy_api_key) {
         return e.into_openai_response();
     }
-    match &state.auth {
-        Some(auth) => Json(auth.status().await).into_response(),
-        None => Json(json!({
-            "authenticated": state.config.openai_api_key.is_some(),
-            "auth_mode": "api-key",
-            "account_id": null,
-            "access_token_expires_at": null,
-            "has_refresh_token": false,
-            "last_refresh": null,
-        }))
-        .into_response(),
-    }
+    Json(auth_status_value(&state).await).into_response()
 }
 
 async fn auth_login(
@@ -259,22 +287,10 @@ async fn auth_login(
     if let Err(e) = require_local_auth_for_url(&headers, &query, &state.config.proxy_api_key) {
         return e.into_openai_response();
     }
-    let Some(auth) = &state.auth else {
-        return AppError::bad_request("Web login is only available when OPENAI_AUTH_MODE=codex")
-            .into_openai_response();
-    };
-
-    let redirect_uri = format!(
-        "http://{}:{}/auth/callback",
-        state.config.codex_oauth_redirect_host, state.config.port
-    );
-    let login = auth.start_login(redirect_uri.clone()).await;
-    Json(json!({
-        "authorization_url": login.authorization_url,
-        "expires_at": login.expires_at,
-        "callback_url": redirect_uri,
-    }))
-    .into_response()
+    match web_login_payload(&state).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
 }
 
 async fn auth_callback(
@@ -935,6 +951,138 @@ async fn admin_account(
         .account_snapshot()
         .unwrap_or_else(|| json!({ "captured_at": null, "headers": {} }));
     Json(snapshot).into_response()
+}
+
+async fn admin_auth_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    Json(auth_status_value(&state).await).into_response()
+}
+
+async fn admin_auth_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    match web_login_payload(&state).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn admin_auth_device_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    let Some(auth) = &state.auth else {
+        return AppError::bad_request("Device login is only available when OPENAI_AUTH_MODE=codex")
+            .into_openai_response();
+    };
+    match auth.start_device_login().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn admin_auth_device_poll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    let Some(auth) = &state.auth else {
+        return AppError::bad_request("Device login is only available when OPENAI_AUTH_MODE=codex")
+            .into_openai_response();
+    };
+    let req = match parse_body(&body) {
+        Ok(v) => v,
+        Err(e) => return e.into_openai_response(),
+    };
+    let (Some(device_auth_id), Some(user_code)) = (
+        req.get("device_auth_id").and_then(|v| v.as_str()),
+        req.get("user_code").and_then(|v| v.as_str()),
+    ) else {
+        return AppError::bad_request("device_auth_id and user_code are required")
+            .into_openai_response();
+    };
+    match auth.poll_device_login(device_auth_id, user_code).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn admin_auth_import(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    let Some(auth) = &state.auth else {
+        return AppError::bad_request("Auth import is only available when OPENAI_AUTH_MODE=codex")
+            .into_openai_response();
+    };
+    let value = match parse_body(&body) {
+        Ok(v) => v,
+        Err(e) => return e.into_openai_response(),
+    };
+    match auth.import_auth(value).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn admin_auth_refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    let Some(auth) = &state.auth else {
+        return AppError::bad_request("Token refresh is only available when OPENAI_AUTH_MODE=codex")
+            .into_openai_response();
+    };
+    match auth.refresh().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => e.into_openai_response(),
+    }
+}
+
+async fn admin_auth_logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(e) = require_admin(&headers, &query, &state) {
+        return e.into_openai_response();
+    }
+    let Some(auth) = &state.auth else {
+        return AppError::bad_request("Logout is only available when OPENAI_AUTH_MODE=codex")
+            .into_openai_response();
+    };
+    match auth.logout().await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => e.into_openai_response(),
+    }
 }
 
 // ---- helpers ----

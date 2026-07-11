@@ -528,6 +528,59 @@ impl CodexAuth {
         summary["status"] = json!("complete");
         Ok(summary)
     }
+
+    /// Writes a pasted `auth.json` (full file, or just the tokens object) to disk
+    /// after validating it carries an access token. Returns the resulting status.
+    pub async fn import_auth(&self, value: Value) -> Result<Value, AppError> {
+        let auth = normalize_import(value)?;
+        write_auth_file(&self.config.codex_auth_file, &auth).await?;
+        Ok(self.status().await)
+    }
+
+    /// Forces a token refresh regardless of the current expiry. Returns the status.
+    pub async fn refresh(&self) -> Result<Value, AppError> {
+        let _guard = self.refresh_lock.lock().await;
+        let auth = read_auth_file(&self.config.codex_auth_file).await?;
+        self.refresh_now(auth).await?;
+        Ok(self.status().await)
+    }
+
+    /// Removes the Codex auth file. A missing file is treated as already cleared.
+    pub async fn logout(&self) -> Result<(), AppError> {
+        match tokio::fs::remove_file(&self.config.codex_auth_file).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(AppError::config(format!(
+                "Unable to remove Codex auth file: {e}"
+            ))),
+        }
+    }
+}
+
+fn normalize_import(value: Value) -> Result<Value, AppError> {
+    if !value.is_object() {
+        return Err(AppError::bad_request("auth.json must be a JSON object"));
+    }
+    let has_wrapped = value
+        .get("tokens")
+        .and_then(|t| t.get("access_token"))
+        .and_then(|v| v.as_str())
+        .is_some();
+    if has_wrapped {
+        return Ok(value);
+    }
+    // Accept a bare tokens object too (just the { access_token, refresh_token, ... }).
+    if value.get("access_token").and_then(|v| v.as_str()).is_some() {
+        return Ok(json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": value,
+            "last_refresh": iso8601(now_ms()),
+        }));
+    }
+    Err(AppError::bad_request(
+        "auth.json must contain tokens.access_token",
+    ))
 }
 
 fn build_chatgpt_auth(json: &Value) -> Value {
