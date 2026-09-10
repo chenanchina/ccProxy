@@ -125,6 +125,10 @@ ADMIN_API_KEY=admin-secret cargo run --release
 
 ## 部署
 
+> [!IMPORTANT]
+> **前置要求:出网到 OpenAI。** ccProxy 的上游是 `chatgpt.com` / `api.openai.com`。若服务器所在网络无法直连(如中国大陆),必须先在本机架好代理(mihomo / clash / xray 等),再用 `UPSTREAM_PROXY_URL=socks5://127.0.0.1:7890`(按实际端口)指过去;否则 `/v1/messages` 请求、Codex OAuth 登录和 token 刷新都会失败。
+> 国内服务器推荐用下方「Linux:一键部署(含代理)」,它会顺带装好 mihomo 并自动写入 `UPSTREAM_PROXY_URL`。
+
 ### macOS 菜单栏 App
 
 ```bash
@@ -169,6 +173,29 @@ sudo systemctl restart ccproxy
 布局:二进制 `/usr/local/bin/ccproxy`、配置 `/etc/ccproxy/.env`、数据 `/var/lib/ccproxy/`(SQLite 与 `~/.codex/auth.json`)。安装后编辑 `/etc/ccproxy/.env`,再 `sudo systemctl restart ccproxy`。
 
 路径和运行用户可用环境变量覆盖,例如 `CCPROXY_USER=ccproxy CCPROXY_DATA=/srv/ccproxy ./scripts/server.sh install`。手动布署见 `systemd/ccproxy.service`。
+
+### Linux:一键部署(含代理)
+
+`scripts/deploy.sh` 面向全新的 Ubuntu / Debian 服务器,一条命令搞定「配代理 → 装 ccProxy → (可选)Caddy HTTPS」。链路:`客户端 →(HTTPS)Caddy → ccProxy →(UPSTREAM_PROXY_URL)mihomo → 节点 → chatgpt.com`。
+
+```bash
+# 全交互(逐项询问是否装 mihomo、订阅链接、安装方式、域名等)
+sudo -E bash scripts/deploy.sh
+
+# 国内服务器 + 机场订阅,非交互:
+CCP_SUB_URL='https://你的机场/订阅' sudo -E bash scripts/deploy.sh
+```
+
+脚本会先把 mihomo 配好并验证能访问 chatgpt.com,再走这个代理下载安装 ccProxy,最后把 `UPSTREAM_PROXY_URL` 写进 `/etc/ccproxy/.env`。常用环境变量:
+
+| 变量 | 说明 |
+| --- | --- |
+| `CCP_INSTALL_MIHOMO` | `yes` / `no`,是否配置本地代理 mihomo(海外直连可 `no`) |
+| `CCP_SUB_URL` | 机场订阅链接(留空则稍后手填 `/etc/mihomo/config.yaml`) |
+| `CCP_MIHOMO_PORT` | 本地代理端口(默认 `7890`) |
+| `CCP_INSTALL_METHOD` | `deb`(默认)或 `source` |
+| `CCP_ADMIN_KEY` / `CCP_PROXY_KEY` | `/admin` 管理密码 / 主密钥(留空自动生成) |
+| `CCP_DOMAIN` | 对外域名(设了才装 Caddy 走 HTTPS) |
 
 ## 配置
 
